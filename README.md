@@ -1,4 +1,4 @@
-# 🛡️ Selgis AI
+# 🛡️ Selgis ML
 
 **Autonomous Self-Healing Training Framework for PyTorch & Transformers.**
 
