@@ -1,1 +1,0 @@
-"""SELGIS test suite."""
