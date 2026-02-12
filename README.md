@@ -54,36 +54,34 @@ pip install "selgis[all]"
 
 ### 1. Robust LLM Training (Llama / Qwen)
 
-Selgis handles protection while you use the familiar Transformers API.
+Selgis handles protection while you use the familiar Transformers API. Now with native **BitsAndBytes** quantization support.
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from selgis import TransformerTrainer, TransformerConfig
 
-# Configuration with protection enabled
+# Configuration with native 4-bit quantization and protection
 config = TransformerConfig(
     model_name_or_path="Qwen/Qwen-2.5-3B",
+    
+    # --- Native Quantization (New in v0.2.0) ---
+    quantization_type="4bit", 
+    bnb_4bit_compute_dtype="bfloat16",
+    bnb_4bit_use_double_quant=True,
+    
+    # --- PEFT / LoRA ---
     use_peft=True,
     peft_config={
-        "r": 8, 
-        "target_modules": ["q_proj", "v_proj"]
+        "r": 16, 
+        "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj"]
     },
     
-    # Enable Selgis protection
+    # --- Selgis protection ---
     nan_recovery=True,      # Auto-rollback on NaN/Spike
-    state_storage="disk",   # Save RAM (store state on disk)
-    patience=3              # Wait 3 epochs of stagnation before intervention
+    state_storage="disk"    # Save RAM (store state on disk)
 )
 
-# Load model (4-bit for memory efficiency)
-model = AutoModelForCausalLM.from_pretrained(
-    config.model_name_or_path, 
-    load_in_4bit=True, 
-    device_map="auto"
-)
-
-# Start training
-trainer = TransformerTrainer(model, config, train_loader)
+# Start training (Trainer handles model loading and quantization automatically)
+trainer = TransformerTrainer(model_or_path=config.model_name_or_path, config=config)
 trainer.train() 
 # You can go to sleep now. If the loss spikes, Selgis fixes it.
 ```
@@ -127,7 +125,7 @@ Selgis ships with a handy CLI for diagnostics and quick execution.
 | :--- | :--- |
 | `selgis device` | Check GPU/CUDA/MPS availability and print device info. |
 | `selgis train` | Run a minimal demo training on synthetic data (Smoke Test). |
-| `selgis train --config <path>` | Run training using a config file (JSON supported, YAML coming soon). |
+| `selgis train --config <path>` | Run training using a config file (**YAML/JSON supported**). |
 | `selgis version` | Print the current library version. |
 
 Example environment check:
@@ -146,7 +144,8 @@ Full technical documentation for `SelgisCore`, `Trainer`, `Callbacks`, and confi
 
 Key components:
 *   **SelgisCore**: The brain of the system (protection, rollback, state management).
-*   **TransformerTrainer**: Wrapper for the HuggingFace ecosystem.
+*   **TransformerTrainer**: Wrapper for the HuggingFace ecosystem with native BitsAndBytes support.
+*   **HistoryCallback**: Automatically saves training history to JSON for later analysis.
 *   **LRFinder**: Tool for finding the optimal learning rate.
 
 ---
