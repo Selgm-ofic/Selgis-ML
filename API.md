@@ -1,7 +1,7 @@
 
 # SELGIS API Reference
 
-**Version:** 0.2.0 (Stable)  
+**Version:** 0.2.1 (Stable)
 **Python:** 3.10+
 
 SELGIS is a universal training framework for PyTorch and HuggingFace Transformers. It provides training protection (NaN/loss spike recovery, rollback), learning-rate scheduling, LR finder, callbacks, and specialized support for quantization (4-bit/8-bit) and PEFT/LoRA.
@@ -16,7 +16,7 @@ SELGIS exposes its main functionality via a CLI that follows a structured schema
 openapi: 3.0.0
 info:
   title: SELGIS CLI Training API
-  version: 0.2.0
+  version: 0.2.1
   description: API for managing ML training runs via CLI.
 paths:
   /train:
@@ -253,8 +253,9 @@ Base training configuration (dataclass).
 | `save_best_only` | bool | True | Save only best checkpoint |
 | `state_storage` | `"disk" \| "memory"` | `"disk"` | Where to store rollback/best state |
 | `state_dir` | str \| None | None | Override directory for state (default: output_dir/selgis_state) |
-| `state_update_interval` | int | 100 | Steps between saving “last good” state |
+| `state_update_interval` | int | 100 | Steps between saving "last good" state |
 | `device` | str | `"auto"` | Device: auto, cuda, cpu, mps |
+| `cpu_offload` | bool | `False` | Offload optimizer states and gradients to CPU (saves VRAM) |
 | `seed` | int | 42 | Random seed |
 
 **Validation:** `fp16` and `bf16` cannot both be True. Either `warmup_epochs` or `warmup_ratio` can be non-zero, not both.
@@ -293,7 +294,9 @@ Extends `SelgisConfig` for HuggingFace models.
 
 ### `SelgisCore(model, optimizer, scheduler, config, device)`
 
-Training protection and optimization: NaN/Inf and loss-spike detection, rollback to last good state, early stopping with optional “final surge”, gradient clipping, mixed precision, and memory-efficient state handling (trainable parameters only; important for LoRA/PEFT).
+Training protection and optimization: NaN/Inf and loss-spike detection, rollback to last good state, early stopping with optional "final surge", gradient clipping, mixed precision, memory-efficient state handling (trainable parameters only; important for LoRA/PEFT), and **CPU Offload** for optimizer states and gradients.
+
+**CPU Offload:** When `config.cpu_offload=True`, the optimizer states (e.g., Adam's exp_avg, exp_avg_sq) and gradients are offloaded to CPU after each step, reducing GPU VRAM usage at the cost of slight speed overhead. This is especially useful for large models on consumer GPUs.
 
 **Methods:**
 
