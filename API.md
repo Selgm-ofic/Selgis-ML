@@ -1572,19 +1572,6 @@ huggingface-cli login
 export HUGGING_FACE_HUB_TOKEN=your_token_here
 ```
 
----
-
-### Breaking Changes
-
-#### v0.2.0
-
-| Change | Description | Migration |
-|--------|-------------|-----------|
-| **Log Format** | Emojis removed from logs | Update parsers if relying on emojis |
-| **Weights Loading** | `load_model` defaults to `weights_only=True` | Use trusted checkpoints only |
-| **HistoryCallback** | Automatically added to all trainers | No action needed |
-
----
 
 ## License
 
@@ -1592,21 +1579,6 @@ Apache 2.0 License - Free for commercial and research use.
 
 ## Support
 
-- **Documentation:** [API_DOCUMENTATION.md](API_DOCUMENTATION.md)
-- **API Reference:** [API.md](API.md)
-- **Test Report:** [full_test_report.md](full_test_report.md)
+- **Documentation:** [API.md](API.md)
 - **GitHub Issues:** For bugs and feature requests
 
-## Citation
-
-If you use Selgis in your research, please cite:
-
-```bibtex
-@software{selgis2026,
-  title = {Selgis ML: Self-Healing Training Framework},
-  author = {Selgis AI},
-  year = {2026},
-  version = {0.2.2},
-  url = {https://github.com/selgis/selgis}
-}
-```
