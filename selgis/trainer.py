@@ -1,10 +1,10 @@
 """Universal trainers for PyTorch and HuggingFace Transformers."""
-from typing import Any, Callable
+from typing import Any, Callable, Optional, Union, List
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from selgis.callbacks import Callback, LoggingCallback, SparsityCallback, HistoryCallback
+from selgis.callbacks import Callback, LoggingCallback, SparsityCallback, HistoryCallback, CheckpointCallback
 from selgis.config import SelgisConfig, TransformerConfig
 from selgis.core import SelgisCore
 from selgis.lr_finder import LRFinder
@@ -28,12 +28,12 @@ class Trainer:
         model: nn.Module,
         config: SelgisConfig,
         train_dataloader: DataLoader,
-        eval_dataloader: DataLoader | None = None,
-        criterion: nn.Module | None = None,
-        optimizer: optim.Optimizer | None = None,
-        callbacks: list[Callback] | None = None,
-        forward_fn: Callable[[nn.Module, Any], tuple[torch.Tensor, torch.Tensor]] | None = None,
-        compute_metrics: Callable[[torch.Tensor, torch.Tensor], dict[str, float]] | None = None,
+        eval_dataloader: Optional[DataLoader] = None,
+        criterion: Optional[nn.Module] = None,
+        optimizer: Optional[optim.Optimizer] = None,
+        callbacks: Optional[List[Callback]] = None,
+        forward_fn: Optional[Callable[[nn.Module, Any], tuple[torch.Tensor, torch.Tensor]]] = None,
+        compute_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], dict[str, float]]] = None,
     ) -> None:
         """
         model: Model to train. config: SelgisConfig. train/eval_dataloader: DataLoaders.
@@ -107,10 +107,19 @@ class Trainer:
         )
 
         self.callbacks = callbacks or [LoggingCallback()]
-        
+
         # Ensure HistoryCallback is present
         if not any(isinstance(cb, HistoryCallback) for cb in self.callbacks):
             self.callbacks.append(HistoryCallback(output_dir=config.output_dir))
+
+        # Ensure CheckpointCallback is present if output_dir is set
+        if not any(isinstance(cb, CheckpointCallback) for cb in self.callbacks):
+            ckpt_cb = CheckpointCallback(
+                output_dir=config.output_dir,
+                save_best_only=getattr(config, "save_best_only", True),
+                save_total_limit=getattr(config, "save_total_limit", 3),
+            )
+            self.callbacks.append(ckpt_cb)
 
         if (
             getattr(config, "sparsity_enabled", False)
@@ -390,10 +399,10 @@ class TransformerTrainer(Trainer):
     """
     def __init__(
         self,
-        model_or_path: nn.Module | str,
+        model_or_path: Union[nn.Module, str],
         config: TransformerConfig,
         train_dataloader: DataLoader,
-        eval_dataloader: DataLoader | None = None,
+        eval_dataloader: Optional[DataLoader] = None,
         tokenizer: Any = None,
         **kwargs,
     ) -> None:
@@ -538,7 +547,7 @@ class TransformerTrainer(Trainer):
         self,
         model: nn.Module,
         peft_config: dict,
-        problem_type: str | None = None,
+        problem_type: Optional[str] = None,
     ) -> nn.Module:
         """Apply PEFT/LoRA to model. Returns model with adapters."""
         try:

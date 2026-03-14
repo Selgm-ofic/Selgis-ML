@@ -2,7 +2,8 @@
 SELGIS Library - Universal Training Framework for PyTorch and HuggingFace Transformers.
 
 Supports: PyTorch models, HuggingFace Transformers, custom architectures,
-training protection (NaN/spike rollback), LR finder, callbacks, PEFT/LoRA.
+training protection (NaN/spike rollback), LR finder, callbacks, PEFT/LoRA,
+and universal data loading (text, image, multimodal, streaming).
 """
 
 
@@ -28,6 +29,20 @@ from selgis.callbacks import (
 )
 from selgis.config import SelgisConfig, TransformerConfig
 from selgis.core import SelgisCore
+from selgis.datasets import (
+    BaseDataset,
+    StreamingDataset,
+    DatasetConfig,
+    TextDataset,
+    HFTextDataset,
+    ImageDataset,
+    MultimodalDataset,
+    StreamingTextDataset,
+    CustomDataset,
+    create_dataset,
+    create_dataloaders,
+    prepare_data_for_trainer,
+)
 from selgis.lr_finder import LRFinder
 from selgis.scheduler import SmartScheduler, get_transformer_scheduler
 from selgis.trainer import Trainer, TransformerTrainer
@@ -44,14 +59,35 @@ from selgis.utils import (
 )
 
 __all__ = [
+    # Config
     "SelgisConfig",
     "TransformerConfig",
+    
+    # Core
     "SelgisCore",
+    
+    # Datasets (NEW)
+    "BaseDataset",
+    "StreamingDataset",
+    "DatasetConfig",
+    "TextDataset",
+    "HFTextDataset",
+    "ImageDataset",
+    "MultimodalDataset",
+    "StreamingTextDataset",
+    "CustomDataset",
+    "create_dataset",
+    "create_dataloaders",
+    "prepare_data_for_trainer",
+    
+    # Training
     "LRFinder",
     "SmartScheduler",
     "get_transformer_scheduler",
     "Trainer",
     "TransformerTrainer",
+    
+    # Callbacks
     "Callback",
     "EarlyStoppingCallback",
     "CheckpointCallback",
@@ -59,6 +95,8 @@ __all__ = [
     "WandBCallback",
     "SparsityCallback",
     "HistoryCallback",
+    
+    # Utils
     "get_device",
     "seed_everything",
     "count_parameters",

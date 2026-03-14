@@ -2,7 +2,7 @@
 import warnings
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional, Union
 import torch
 import torch.nn as nn
 from selgis.config import SelgisConfig
@@ -21,7 +21,7 @@ class SelgisCore:
         self,
         model: nn.Module,
         optimizer: torch.optim.Optimizer,
-        scheduler: SmartScheduler | Any,
+        scheduler: Union[SmartScheduler, Any],
         config: SelgisConfig,
         device: torch.device,
     ) -> None:
@@ -38,7 +38,7 @@ class SelgisCore:
         if self._state_storage not in {"disk", "memory"}:
             raise ValueError("state_storage must be 'disk' or 'memory'")
 
-        self._state_dir: Path | None = None
+        self._state_dir: Optional[Path] = None
         if self._state_storage == "disk":
             base_dir = getattr(config, "state_dir", None) or config.output_dir
             self._state_dir = Path(base_dir) / "selgis_state"
@@ -48,10 +48,10 @@ class SelgisCore:
         self._max_loss_history: int = max(self.config.min_history_len * 10, 1000)
         self._best_metric = float("-inf")
         self._best_loss = float("inf")
-        self._best_state: dict | str | None = None
+        self._best_state: Optional[Union[dict, str]] = None
         self._no_improve = 0
         self._surge_done = False
-        self._last_good_state: dict | str | None = None
+        self._last_good_state: Optional[Union[dict, str]] = None
         self._state_update_interval: int = getattr(
             config,
             "state_update_interval",
@@ -411,9 +411,9 @@ class SelgisCore:
         self._no_improve += 1
 
         if self._no_improve >= self.config.patience:
-            if not self._surge_done and hasattr(self.scheduler, "surge_lr"):
-                print("\n[INFO] Final surge triggered")
-                self.scheduler.surge_lr(factor=5.0)
+            if not self._surge_done and hasattr(self.scheduler, "surge_lr") and self.config.final_surge_factor > 0:
+                print(f"\n[INFO] Final surge triggered (factor={self.config.final_surge_factor})")
+                self.scheduler.surge_lr(factor=self.config.final_surge_factor)
                 self._surge_done = True
                 self._no_improve = 0
                 return "SURGE"

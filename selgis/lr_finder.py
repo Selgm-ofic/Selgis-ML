@@ -1,7 +1,7 @@
 """Learning rate finder (Leslie Smith style): exponential LR sweep, optimal LR from loss curve."""
 
 import math
-from typing import Callable, Any
+from typing import Callable, Any, Optional
 
 import torch
 import torch.nn as nn
@@ -144,8 +144,8 @@ class LRFinder:
     def _compute_loss(
         self,
         batch: Any,
-        forward_fn: Callable | None,
-    ) -> torch.Tensor | None:
+        forward_fn: Optional[Callable],
+    ) -> Optional[torch.Tensor]:
         """Compute loss for one batch (dict or tensor inputs)."""
         batch = move_to_device(batch, self.device)
 

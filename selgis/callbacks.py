@@ -4,7 +4,7 @@ import json
 import shutil
 from abc import ABC
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 import torch
 import torch.nn as nn
 
@@ -261,8 +261,8 @@ class WandBCallback(Callback):
     def __init__(
         self,
         project: str,
-        name: str | None = None,
-        config: dict | None = None,
+        name: Optional[str] = None,
+        config: Optional[dict] = None,
     ) -> None:
         self.project = project
         self.name = name

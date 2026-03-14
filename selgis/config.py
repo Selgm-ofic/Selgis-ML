@@ -1,6 +1,6 @@
 """Configuration dataclasses for generic and Transformer training."""
 from dataclasses import dataclass, field
-from typing import Literal, Any
+from typing import Literal, Any, Optional, Dict
 
 
 @dataclass
@@ -15,10 +15,11 @@ class SelgisConfig:
     # === Early Stopping ===
     patience: int = 5
     min_delta: float = 1e-4
+    final_surge_factor: float = 5.0  # LR multiplier for final surge before early stopping (0 to disable)
 
     # === Gradient ===
     grad_clip_norm: float = 1.0
-    grad_clip_value: float | None = None
+    grad_clip_value: Optional[float] = None
 
     # === Anomaly Detection ===
     spike_threshold: float = 3.0
@@ -56,15 +57,15 @@ class SelgisConfig:
 
     # === Logging ===
     logging_steps: int = 10
-    eval_steps: int | None = None
-    save_steps: int | None = None
+    eval_steps: Optional[int] = None
+    save_steps: Optional[int] = None
 
     # === Checkpointing ===
     output_dir: str = "./output"
     save_total_limit: int = 3
     save_best_only: bool = True
     state_storage: Literal["disk", "memory"] = "disk"
-    state_dir: str | None = None
+    state_dir: Optional[str] = None
     state_update_interval: int = 100
 
     # === Device ===
@@ -111,13 +112,13 @@ class TransformerConfig(SelgisConfig):
 
     # LoRA / PEFT
     use_peft: bool = False
-    peft_config: dict[str, Any] = field(default_factory=dict)
+    peft_config: Dict[str, Any] = field(default_factory=dict)
 
     # Gradient Checkpointing
     gradient_checkpointing: bool = False
 
     # DeepSpeed
-    deepspeed_config: str | None = None
+    deepspeed_config: Optional[str] = None
 
     # === Quantization (BitsAndBytes) ===
     quantization_type: Literal["no", "8bit", "4bit"] = "no"
