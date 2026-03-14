@@ -1,9 +1,10 @@
 """
 Command-line interface for the SELGIS training framework.
 Usage:
-selgis --version
-selgis device
-selgis train --config path/to/config.yaml
+    selgis --version
+    selgis device
+    selgis train [--config path/to/config.yaml]
+    selgis test
 """
 import argparse
 import sys
@@ -20,9 +21,15 @@ def _cmd_version() -> int:
 def _cmd_device() -> int:
     """Print compute device info (CUDA/MPS/CPU)."""
     from selgis.utils import get_device
-    # Here we explicitly want to print info
     get_device("auto")
     return 0
+
+
+def _cmd_test() -> int:
+    """Run the complete test suite."""
+    import subprocess
+    result = subprocess.run([sys.executable, "-m", "test_selgis"])
+    return result.returncode
 
 
 def _cmd_train(args: argparse.Namespace) -> int:
@@ -93,6 +100,7 @@ def main() -> int:
     
     subparsers.add_parser("version", help="Show version")
     subparsers.add_parser("device", help="Show compute device (CUDA/MPS/CPU)")
+    subparsers.add_parser("test", help="Run the complete test suite (16 tests)")
 
     train_parser = subparsers.add_parser("train", help="Run training")
     train_parser.add_argument(
@@ -109,6 +117,8 @@ def main() -> int:
         return _cmd_version()
     if args.command == "device":
         return _cmd_device()
+    if args.command == "test":
+        return _cmd_test()
     if args.command == "train":
         return _cmd_train(args)
     if args.command is None:
