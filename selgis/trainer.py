@@ -1,4 +1,5 @@
 """Universal trainers for PyTorch and HuggingFace Transformers."""
+import math
 from typing import Any, Callable, Optional, Union
 
 import torch
@@ -503,7 +504,8 @@ class TransformerTrainer(Trainer):
 
     Supports automatic model/tokenizer loading, PEFT/LoRA adapters,
     gradient checkpointing, quantization, device-map offloading,
-    and automatic pad token synchronization.
+    automatic pad token synchronization, and memory-efficient
+    evaluation for large-vocabulary generative models.
     """
 
     def __init__(
@@ -573,6 +575,90 @@ class TransformerTrainer(Trainer):
         )
 
         self.tokenizer = tokenizer
+
+    @torch.inference_mode()
+    def evaluate(self) -> dict[str, float]:
+        """Memory-efficient evaluation for Transformer models.
+
+        For causal LM, seq2seq, and masked LM models, computes loss
+        and perplexity without storing full logits tensors.  This
+        avoids OOM on large-vocabulary models (e.g. 150K+ tokens)
+        where ``logits.float()`` can allocate several gigabytes.
+
+        For classification and regression models, falls back to the
+        base ``Trainer.evaluate`` which computes accuracy.
+
+        Returns:
+            Metrics dictionary.  For generative models contains
+            ``loss`` and ``perplexity``.  For classification contains
+            ``loss`` and ``accuracy``.
+        """
+        if self.eval_dataloader is None:
+            return {}
+
+        if self._transformer_config.problem_type not in (
+            "causal_lm", "seq2seq", "masked_lm",
+        ):
+            return super().evaluate()
+
+        self.model.eval()
+        total_loss = 0.0
+        total_tokens = 0
+        num_batches = 0
+
+        for batch in self.eval_dataloader:
+            inputs, _ = unpack_batch(batch)
+
+            if is_dict_like(inputs):
+                inputs_dict = dict(inputs)
+                if not self._has_device_map:
+                    inputs_dict = move_to_device(
+                        inputs_dict, self.device,
+                    )
+            else:
+                if not self._has_device_map:
+                    inputs = move_to_device(inputs, self.device)
+                inputs_dict = {"input_ids": inputs}
+
+            with self.selgis.get_amp_context():
+                outputs = self.model(**inputs_dict)
+
+            if hasattr(outputs, "loss") and outputs.loss is not None:
+                total_loss += outputs.loss.item()
+
+                labels = inputs_dict.get("labels")
+                if labels is not None:
+                    non_pad = (labels != -100).sum().item()
+                    total_tokens += non_pad
+                else:
+                    input_ids = inputs_dict.get("input_ids")
+                    if input_ids is not None:
+                        total_tokens += input_ids.numel()
+
+            num_batches += 1
+            del outputs
+
+        avg_loss = total_loss / max(num_batches, 1)
+
+        try:
+            perplexity = math.exp(min(avg_loss, 100))
+        except OverflowError:
+            perplexity = float("inf")
+
+        metrics: dict[str, float] = {
+            "loss": avg_loss,
+            "perplexity": perplexity,
+        }
+
+        if total_tokens > 0:
+            metrics["eval_tokens"] = float(total_tokens)
+
+        self._call_callbacks("on_evaluate", metrics=metrics)
+
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        return metrics
 
     @staticmethod
     def _try_load_tokenizer(
