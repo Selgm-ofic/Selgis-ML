@@ -92,7 +92,7 @@ class Trainer:
             ]
             optimizer = optim.AdamW(
                 trainable_params,
-                lr=1e-3,
+                lr=config.learning_rate,
                 weight_decay=config.weight_decay,
             )
         self.optimizer = optimizer
@@ -502,7 +502,8 @@ class TransformerTrainer(Trainer):
     """Trainer for HuggingFace Transformers.
 
     Supports automatic model/tokenizer loading, PEFT/LoRA adapters,
-    gradient checkpointing, quantization, and device-map offloading.
+    gradient checkpointing, quantization, device-map offloading,
+    and automatic pad token synchronization.
     """
 
     def __init__(
@@ -531,9 +532,16 @@ class TransformerTrainer(Trainer):
         else:
             model = model_or_path
 
+        if tokenizer is not None:
+            self._sync_pad_token(model, tokenizer)
+
         if config.gradient_checkpointing:
             if hasattr(model, "gradient_checkpointing_enable"):
-                model.gradient_checkpointing_enable()
+                model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={
+                        "use_reentrant": False,
+                    },
+                )
 
         if config.use_peft and config.peft_config:
             model = self._apply_peft(
@@ -556,10 +564,42 @@ class TransformerTrainer(Trainer):
 
         self.tokenizer = tokenizer
 
+    @staticmethod
+    def _sync_pad_token(model: nn.Module, tokenizer: Any) -> None:
+        """Synchronize pad token between tokenizer and model config.
+
+        Sets ``tokenizer.pad_token`` to ``eos_token`` if missing,
+        and propagates the pad token id to ``model.config.pad_token_id``
+        so that batched inference and training work correctly.
+
+        Args:
+            model: HuggingFace model.
+            tokenizer: HuggingFace tokenizer.
+        """
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            print(
+                f"[INFO] pad_token not set — using eos_token "
+                f"({tokenizer.eos_token!r})"
+            )
+
+        if (
+            hasattr(model, "config")
+            and getattr(model.config, "pad_token_id", None) is None
+        ):
+            model.config.pad_token_id = tokenizer.pad_token_id
+            print(
+                f"[INFO] Model pad_token_id set to "
+                f"{tokenizer.pad_token_id}"
+            )
+
     def _load_model(
         self, path: str, config: TransformerConfig,
     ) -> nn.Module:
         """Load a HuggingFace model by path and ``problem_type``.
+
+        Automatically sets ``device_map="auto"`` when quantization is
+        requested, as BitsAndBytes requires explicit device mapping.
 
         Args:
             path: Pretrained model name or path.
@@ -592,7 +632,10 @@ class TransformerTrainer(Trainer):
 
         if bnb_config is not None and device_map is None:
             device_map = "auto"
-            print("[INFO] device_map='auto' set automatically (required for quantization)")
+            print(
+                "[INFO] device_map='auto' set automatically "
+                "(required for quantization)"
+            )
 
         load_kw: dict[str, Any] = {
             "trust_remote_code": trust_remote,
