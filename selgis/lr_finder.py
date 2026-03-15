@@ -1,20 +1,33 @@
-"""Learning rate finder (Leslie Smith style): exponential LR sweep, optimal LR from loss curve."""
+"""Learning rate finder (Leslie Smith style)."""
 
 import math
-from typing import Callable, Any, Optional
+from contextlib import nullcontext
+from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from selgis.utils import move_to_device, unpack_batch, is_dict_like
+from selgis.utils import is_dict_like, move_to_device, unpack_batch
 
 
 class LRFinder:
-    """
-    Find learning rate by sweeping LR exponentially and tracking loss.
-    Works with any PyTorch or HuggingFace model. Use trainable_only=True for
-    large models (e.g. LLM with LoRA) to save memory.
+    """Find optimal learning rate via exponential sweep.
+
+    Works with any PyTorch or HuggingFace model.  Use
+    ``trainable_only=True`` for large models (e.g. LLM with LoRA)
+    to reduce memory during state save/restore.
+
+    Args:
+        model: Model to tune.
+        optimizer: Optimizer whose LR will be swept.
+        criterion: Loss function.  May be ``None`` if the model
+            returns loss directly (e.g. HuggingFace models).
+        device: Compute device.  Defaults to the device of the first
+            model parameter.
+        trainable_only: Save and restore only trainable parameters.
+        amp_dtype: Optional dtype for ``torch.amp.autocast``
+            (e.g. ``torch.float16``).
     """
 
     def __init__(
@@ -24,67 +37,111 @@ class LRFinder:
         criterion: nn.Module | Callable | None = None,
         device: torch.device | None = None,
         trainable_only: bool = False,
+        amp_dtype: torch.dtype | None = None,
     ) -> None:
-        """
-        Args:
-            model: Model to tune.
-            optimizer: Optimizer (LR will be swept).
-            criterion: Loss; can be None if model returns loss (e.g. HuggingFace).
-            device: Device; defaults to model's device.
-            trainable_only: If True, clone/restore only trainable parameters (saves memory for LoRA/LLM).
-        """
         self.model = model
         self.optimizer = optimizer
         self.criterion = criterion
-        self.device = device or next(model.parameters()).device
         self.trainable_only = trainable_only
-        self._trainable_names = (
-            {n for n, p in model.named_parameters() if p.requires_grad}
-            if trainable_only
-            else None
-        )
+        self.amp_dtype = amp_dtype
+
+        self._has_device_map = hasattr(model, "hf_device_map")
+
+        if device is not None:
+            self.device = device
+        elif not self._has_device_map:
+            self.device = next(model.parameters()).device
+        else:
+            self.device = torch.device("cuda")
+
+        self._trainable_names: set[str] | None = None
+        if trainable_only:
+            self._trainable_names = {
+                n
+                for n, p in model.named_parameters()
+                if p.requires_grad
+            }
 
         self._initial_state = self._clone_state()
-        self._initial_optim_state = optimizer.state_dict()
+        self._initial_optim_state = {
+            k: (
+                v.cpu().clone()
+                if isinstance(v, torch.Tensor)
+                else v
+            )
+            for k, v in optimizer.state_dict().items()
+        }
         self._lrs: list[float] = []
         self._losses: list[float] = []
 
-    def _clone_state(self) -> dict:
-        """Clone model state to CPU (all params or trainable_only)."""
-        state = self.model.state_dict()
-        if self._trainable_names is not None:
-            state = {k: v.cpu().clone() for k, v in state.items() if k in self._trainable_names}
-        else:
-            state = {k: v.cpu().clone() for k, v in state.items()}
+    def _clone_state(self) -> dict[str, torch.Tensor]:
+        """Clone model state to CPU.
+
+        Returns:
+            Dictionary of parameter names to CPU tensor copies.
+        """
+        state: dict[str, torch.Tensor] = {}
+        for name, param in self.model.named_parameters():
+            if (
+                self._trainable_names is not None
+                and name not in self._trainable_names
+            ):
+                continue
+            if param.device.type == "cpu":
+                state[name] = param.detach().clone()
+            else:
+                state[name] = param.detach().cpu()
         return state
 
     def _restore_state(self) -> None:
         """Restore initial model and optimizer state."""
-        if self._trainable_names is not None:
-            current = self.model.state_dict()
-            for k, v in self._initial_state.items():
-                if k in current:
-                    current[k] = v.to(self.device)
-            self.model.load_state_dict(current, strict=False)
-        else:
-            self.model.load_state_dict(
-                {k: v.to(self.device) for k, v in self._initial_state.items()}
-            )
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if name in self._initial_state:
+                    param.data.copy_(self._initial_state[name])
+
         self.optimizer.load_state_dict(self._initial_optim_state)
+
+    def _get_amp_context(self):
+        """Return autocast context matching training configuration."""
+        if self.amp_dtype is None:
+            return nullcontext()
+        if self.device.type == "cuda":
+            return torch.amp.autocast("cuda", dtype=self.amp_dtype)
+        if self.device.type == "cpu":
+            return torch.amp.autocast("cpu", dtype=self.amp_dtype)
+        return nullcontext()
 
     def find(
         self,
         train_loader,
-        forward_fn: Callable[[nn.Module, Any], tuple[torch.Tensor, torch.Tensor]] | None = None,
+        forward_fn: (
+            Callable[
+                [nn.Module, Any],
+                tuple[torch.Tensor, torch.Tensor],
+            ]
+            | None
+        ) = None,
         start_lr: float = 1e-7,
         end_lr: float = 1.0,
         num_steps: int = 100,
         smooth_f: float = 0.05,
         diverge_th: float = 4.0,
     ) -> float:
-        """
-        Run LR sweep. forward_fn (model, batch) -> (loss, logits) optional.
-        Returns suggested learning rate.
+        """Run LR sweep and return the suggested learning rate.
+
+        Args:
+            train_loader: Training data loader.
+            forward_fn: Optional ``(model, batch) -> (loss, logits)``.
+            start_lr: Starting learning rate.
+            end_lr: Ending learning rate.
+            num_steps: Number of sweep steps.
+            smooth_f: Exponential smoothing factor for loss.
+            diverge_th: Stop if smoothed loss exceeds
+                ``diverge_th * best_loss``.
+
+        Returns:
+            Suggested optimal learning rate.
         """
         print("\n[INFO] Searching for optimal LR...")
 
@@ -109,14 +166,20 @@ class LRFinder:
 
             loss = self._compute_loss(batch, forward_fn)
 
-            if loss is None or torch.isnan(loss) or torch.isinf(loss):
+            if (
+                loss is None
+                or torch.isnan(loss)
+                or torch.isinf(loss)
+            ):
                 print(f"[WARN] Loss exploded at LR={lr:.2e}")
                 break
 
             loss_val = loss.item()
             smoothed_loss = (
-                loss_val if step == 0
-                else smooth_f * loss_val + (1 - smooth_f) * smoothed_loss
+                loss_val
+                if step == 0
+                else smooth_f * loss_val
+                + (1 - smooth_f) * smoothed_loss
             )
 
             self._losses.append(smoothed_loss)
@@ -136,52 +199,89 @@ class LRFinder:
             self._set_lr(lr)
 
         self._restore_state()
-        optimal_lr = self._compute_optimal_lr(self._lrs, self._losses)
+        self._free_saved_state()
+
+        optimal_lr = self._compute_optimal_lr(
+            self._lrs, self._losses,
+        )
         print(f"[INFO] Found optimal LR: {optimal_lr:.2e}")
 
         return optimal_lr
+
+    def _free_saved_state(self) -> None:
+        """Release saved state tensors to free memory."""
+        self._initial_state.clear()
+        self._initial_optim_state.clear()
 
     def _compute_loss(
         self,
         batch: Any,
         forward_fn: Optional[Callable],
     ) -> Optional[torch.Tensor]:
-        """Compute loss for one batch (dict or tensor inputs)."""
-        batch = move_to_device(batch, self.device)
+        """Compute loss for one batch.
 
-        if forward_fn is not None:
-            loss, _ = forward_fn(self.model, batch)
-            return loss
+        Args:
+            batch: Raw batch from the data loader.
+            forward_fn: Optional custom forward function.
 
-        inputs, labels = unpack_batch(batch)
+        Returns:
+            Loss tensor, or ``None`` on failure.
+        """
+        if not self._has_device_map:
+            batch = move_to_device(batch, self.device)
 
-        if is_dict_like(inputs):
-            inputs_dict = dict(inputs)
-            outputs = self.model(**inputs_dict)
-            if hasattr(outputs, "loss") and outputs.loss is not None:
-                return outputs.loss
+        with self._get_amp_context():
+            if forward_fn is not None:
+                loss, _ = forward_fn(self.model, batch)
+                return loss
+
+            inputs, labels = unpack_batch(batch)
+
+            if is_dict_like(inputs):
+                outputs = self.model(**dict(inputs))
+                if (
+                    hasattr(outputs, "loss")
+                    and outputs.loss is not None
+                ):
+                    return outputs.loss
+                if self.criterion is None:
+                    raise ValueError(
+                        "Model doesn't return loss, "
+                        "criterion required"
+                    )
+                logits = (
+                    outputs.logits
+                    if hasattr(outputs, "logits")
+                    else outputs
+                )
+                return self.criterion(logits, labels)
+
+            outputs = self.model(inputs)
             if self.criterion is None:
-                raise ValueError("Model doesn't return loss, criterion required")
-            logits = outputs.logits if hasattr(outputs, "logits") else outputs
-            return self.criterion(logits, labels)
-
-        outputs = self.model(inputs)
-        if self.criterion is None:
-            raise ValueError("Criterion required for tensor input")
-        
-        return self.criterion(outputs, labels)
+                raise ValueError(
+                    "Criterion required for tensor input"
+                )
+            return self.criterion(outputs, labels)
 
     def _set_lr(self, lr: float) -> None:
-        """Set learning rate for all param groups."""
-        for param_group in self.optimizer.param_groups:
-            param_group["lr"] = lr
+        """Set learning rate for all parameter groups."""
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = lr
 
+    @staticmethod
     def _compute_optimal_lr(
-        self,
         lrs: list[float],
         losses: list[float],
     ) -> float:
-        """Pick LR at steepest descent (slightly before min)."""
+        """Select LR at steepest descent of the loss curve.
+
+        Args:
+            lrs: Learning rates from the sweep.
+            losses: Corresponding smoothed losses.
+
+        Returns:
+            Suggested learning rate.
+        """
         if len(lrs) < 10:
             return lrs[len(lrs) // 2] if lrs else 1e-3
 
@@ -189,8 +289,10 @@ class LRFinder:
         min_idx = 0
 
         for i in range(1, len(losses)):
-            grad = (losses[i] - losses[i - 1])
-            grad /= (math.log10(lrs[i]) - math.log10(lrs[i - 1]))
+            lr_diff = math.log10(lrs[i]) - math.log10(lrs[i - 1])
+            if abs(lr_diff) < 1e-12:
+                continue
+            grad = (losses[i] - losses[i - 1]) / lr_diff
             if grad < min_grad:
                 min_grad = grad
                 min_idx = i
@@ -199,6 +301,6 @@ class LRFinder:
         return lrs[safe_idx]
 
     @property
-    def history(self) -> dict[str, list]:
-        """LR and loss history for plotting."""
+    def history(self) -> dict[str, list[float]]:
+        """LR and loss history from the last sweep."""
         return {"lrs": self._lrs, "losses": self._losses}

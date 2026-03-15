@@ -1,28 +1,42 @@
 """Universal trainers for PyTorch and HuggingFace Transformers."""
-from typing import Any, Callable, Optional, Union, List
+from typing import Any, Callable, Optional, Union
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from selgis.callbacks import Callback, LoggingCallback, SparsityCallback, HistoryCallback, CheckpointCallback
+
+from selgis.callbacks import (
+    Callback,
+    CheckpointCallback,
+    HistoryCallback,
+    LoggingCallback,
+    SparsityCallback,
+)
 from selgis.config import SelgisConfig, TransformerConfig
 from selgis.core import SelgisCore
 from selgis.lr_finder import LRFinder
 from selgis.scheduler import SmartScheduler
 from selgis.utils import (
     get_device,
-    move_to_device,
-    unpack_batch,
-    seed_everything,
+    get_optimizer_grouped_params,
     is_dict_like,
+    move_to_device,
+    seed_everything,
+    unpack_batch,
 )
 
 
 class Trainer:
+    """Universal trainer for PyTorch models.
+
+    Supports any architecture, custom forward functions, callbacks,
+    mixed precision, LR finder, and gradient accumulation.
+
+    Device management is handled internally by ``_forward``.
+    The caller must not move batches to the device manually.
     """
-    Universal trainer for PyTorch models: any architecture, custom forward,
-    callbacks, mixed precision, LR finder.
-    """
+
     def __init__(
         self,
         model: nn.Module,
@@ -31,14 +45,30 @@ class Trainer:
         eval_dataloader: Optional[DataLoader] = None,
         criterion: Optional[nn.Module] = None,
         optimizer: Optional[optim.Optimizer] = None,
-        callbacks: Optional[List[Callback]] = None,
-        forward_fn: Optional[Callable[[nn.Module, Any], tuple[torch.Tensor, torch.Tensor]]] = None,
-        compute_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], dict[str, float]]] = None,
+        callbacks: Optional[list[Callback]] = None,
+        forward_fn: Optional[
+            Callable[
+                [nn.Module, Any], tuple[torch.Tensor, torch.Tensor]
+            ]
+        ] = None,
+        compute_metrics: Optional[
+            Callable[
+                [torch.Tensor, torch.Tensor], dict[str, float]
+            ]
+        ] = None,
     ) -> None:
-        """
-        model: Model to train. config: SelgisConfig. train/eval_dataloader: DataLoaders.
-        criterion: Loss (optional if model returns loss). optimizer: optional, else created.
-        forward_fn: (model, batch) -> (loss, logits). compute_metrics: (preds, labels) -> dict.
+        """Initialize Trainer.
+
+        Args:
+            model: Model to train.
+            config: Training configuration.
+            train_dataloader: Training data loader.
+            eval_dataloader: Optional evaluation data loader.
+            criterion: Loss function. Optional if model returns loss.
+            optimizer: Optional optimizer; created automatically if absent.
+            callbacks: List of callbacks. Defaults to ``[LoggingCallback()]``.
+            forward_fn: Custom ``(model, batch) -> (loss, logits)`` callable.
+            compute_metrics: ``(preds, labels) -> metrics_dict`` callable.
         """
         self.model = model
         self.config = config
@@ -49,33 +79,33 @@ class Trainer:
         self.compute_metrics = compute_metrics
 
         self.device = get_device(config.device)
-        # Don't move model to device if it has hf_device_map (device_map="auto")
-        if not hasattr(self.model, "hf_device_map"):
+        self._has_device_map = hasattr(self.model, "hf_device_map")
+
+        if not self._has_device_map:
             self.model.to(self.device)
 
         seed_everything(config.seed)
 
         if optimizer is None:
-            trainable_params = [p for p in model.parameters() if p.requires_grad]
+            trainable_params = [
+                p for p in model.parameters() if p.requires_grad
+            ]
             optimizer = optim.AdamW(
                 trainable_params,
-                lr=1e-3,  # Will be updated by LR Finder
+                lr=1e-3,
                 weight_decay=config.weight_decay,
             )
         self.optimizer = optimizer
 
-        # CPU Offload setup warning
-        if getattr(config, "cpu_offload", False):
-            print("[INFO] CPU Offload enabled: optimizer states and gradients will be offloaded to CPU")
-
-        # LR Finder
         if config.lr_finder_enabled:
             lr_finder = LRFinder(
                 model,
                 self.optimizer,
                 criterion,
                 self.device,
-                trainable_only=getattr(config, "lr_finder_trainable_only", False),
+                trainable_only=getattr(
+                    config, "lr_finder_trainable_only", False,
+                ),
             )
             self.initial_lr = lr_finder.find(
                 train_dataloader,
@@ -89,11 +119,13 @@ class Trainer:
         else:
             self.initial_lr = self.optimizer.param_groups[0]["lr"]
 
-        # Scheduler: total optimizer steps (accounting for gradient accumulation)
-        steps_per_epoch = (len(train_dataloader) + config.gradient_accumulation_steps - 1) // max(
-            config.gradient_accumulation_steps, 1
-        )
+        steps_per_epoch = (
+            len(train_dataloader)
+            + config.gradient_accumulation_steps
+            - 1
+        ) // max(config.gradient_accumulation_steps, 1)
         num_training_steps = steps_per_epoch * config.max_epochs
+
         self.scheduler = SmartScheduler(
             self.optimizer,
             self.initial_lr,
@@ -101,90 +133,115 @@ class Trainer:
             num_training_steps=num_training_steps,
         )
 
-        # SelgisCore
         self.selgis = SelgisCore(
-            model, self.optimizer, self.scheduler, config, self.device
+            model, self.optimizer, self.scheduler, config, self.device,
         )
 
         self.callbacks = callbacks or [LoggingCallback()]
 
-        # Ensure HistoryCallback is present
-        if not any(isinstance(cb, HistoryCallback) for cb in self.callbacks):
-            self.callbacks.append(HistoryCallback(output_dir=config.output_dir))
-
-        # Ensure CheckpointCallback is present if output_dir is set
-        if not any(isinstance(cb, CheckpointCallback) for cb in self.callbacks):
-            ckpt_cb = CheckpointCallback(
-                output_dir=config.output_dir,
-                save_best_only=getattr(config, "save_best_only", True),
-                save_total_limit=getattr(config, "save_total_limit", 3),
-            )
-            self.callbacks.append(ckpt_cb)
-
-        if (
-            getattr(config, "sparsity_enabled", False)
-            and not any(isinstance(cb, SparsityCallback) for cb in self.callbacks)
+        if not any(
+            isinstance(cb, HistoryCallback) for cb in self.callbacks
         ):
-            sparsity_cb = SparsityCallback(
-                target_sparsity=getattr(config, "sparsity_target", 0.0),
-                start_epoch=getattr(config, "sparsity_start_epoch", 0),
-                frequency=getattr(config, "sparsity_frequency", 1),
+            self.callbacks.append(
+                HistoryCallback(output_dir=config.output_dir),
             )
-            self.callbacks.append(sparsity_cb)
 
-        # State
+        if not any(
+            isinstance(cb, CheckpointCallback) for cb in self.callbacks
+        ):
+            self.callbacks.append(
+                CheckpointCallback(
+                    output_dir=config.output_dir,
+                    save_best_only=getattr(
+                        config, "save_best_only", True,
+                    ),
+                    save_total_limit=getattr(
+                        config, "save_total_limit", 3,
+                    ),
+                ),
+            )
+
+        if getattr(config, "sparsity_enabled", False) and not any(
+            isinstance(cb, SparsityCallback) for cb in self.callbacks
+        ):
+            self.callbacks.append(
+                SparsityCallback(
+                    target_sparsity=getattr(
+                        config, "sparsity_target", 0.0,
+                    ),
+                    start_epoch=getattr(
+                        config, "sparsity_start_epoch", 0,
+                    ),
+                    frequency=getattr(config, "sparsity_frequency", 1),
+                ),
+            )
+
         self._global_step = 0
         self._current_epoch = 0
 
     def train(self) -> dict[str, Any]:
-        """Run training loop. Returns final metrics dict."""
-        self._call_callbacks("on_train_begin")
+        """Run the full training loop.
 
-        metrics = {}
+        Returns:
+            Final metrics dictionary.
+        """
+        self._call_callbacks("on_train_begin")
+        metrics: dict[str, Any] = {}
+        primary_metric = getattr(
+            self.config, "primary_metric", None,
+        )
 
         for epoch in range(self.config.max_epochs):
             self._current_epoch = epoch
             self._call_callbacks("on_epoch_begin", epoch=epoch)
 
-            # Training
             train_loss = self._train_epoch()
-
-            # Evaluation
             metrics = {"train_loss": train_loss}
+
             if self.eval_dataloader is not None:
                 eval_metrics = self.evaluate()
                 metrics.update(eval_metrics)
 
-            self._call_callbacks("on_epoch_end", epoch=epoch, metrics=metrics)
+            self._call_callbacks(
+                "on_epoch_end", epoch=epoch, metrics=metrics,
+            )
 
-            # Check stopping
+            if primary_metric and primary_metric in metrics:
+                chosen_metric = primary_metric
+                higher_is_better = primary_metric != "loss"
+            elif "accuracy" in metrics:
+                chosen_metric = "accuracy"
+                higher_is_better = True
+            else:
+                chosen_metric = "loss"
+                higher_is_better = False
+
             status = self.selgis.eval_epoch(
                 metrics,
                 epoch,
-                primary_metric="accuracy" if "accuracy" in metrics else "loss",
-                higher_is_better="accuracy" in metrics,
+                primary_metric=chosen_metric,
+                higher_is_better=higher_is_better,
             )
 
             if status == "STOP":
                 break
 
-            # Check callback stopping
-            should_stop = False
-            for cb in self.callbacks:
-                if hasattr(cb, "should_stop") and cb.should_stop:
-                    should_stop = True
-                    break
-
-            if should_stop:
+            if any(
+                getattr(cb, "should_stop", False)
+                for cb in self.callbacks
+            ):
                 break
 
         self.selgis.load_best_weights()
         self._call_callbacks("on_train_end")
-
         return metrics
 
     def _train_epoch(self) -> float:
-        """Single training epoch with gradient accumulation; returns average loss."""
+        """Run a single training epoch with gradient accumulation.
+
+        Returns:
+            Average training loss for the epoch.
+        """
         self.model.train()
         total_loss = 0.0
         num_steps = 0
@@ -210,182 +267,231 @@ class Trainer:
                     accum_count = 0
                     self._global_step += 1
             else:
-                # Rollback: reset accumulation
                 self.optimizer.zero_grad(set_to_none=True)
                 accum_count = 0
 
             self._call_callbacks(
                 "on_step_end",
                 step=self._global_step,
-                loss=loss or 0.0,
+                loss=loss if loss is not None else 0.0,
             )
 
-        # Last partial accumulation in epoch
         if accum_count > 0:
             self.selgis.optimizer_step()
             self._step_scheduler_if_needed()
+            self.optimizer.zero_grad(set_to_none=True)
             self._global_step += 1
 
         return total_loss / max(num_steps, 1)
 
     def _step_scheduler_if_needed(self) -> None:
-        """Call scheduler.step() when using step-based schedule (warmup_ratio > 0)."""
+        """Call scheduler step when using step-based schedule."""
         if getattr(self.config, "warmup_ratio", 0) <= 0:
             return
         if hasattr(self.scheduler, "step"):
             self.scheduler.step()
 
-    def _training_step(self, batch: Any) -> float | None:
-        """
-        Single training step: forward, loss check, backward. No optimizer step here
-        (handled in _train_epoch for gradient accumulation). Returns loss or None if rollback.
-        """
-        # Don't move batch to device if model uses device_map="auto"
-        has_device_map = hasattr(self.model, "hf_device_map")
-        if not has_device_map:
-            batch = move_to_device(batch, self.device)
+    def _training_step(self, batch: Any) -> Optional[float]:
+        """Execute a single forward + backward pass.
 
+        Device management is delegated to ``_forward``.
+        No optimizer step is performed here (handled by ``_train_epoch``
+        for gradient accumulation).
+
+        Args:
+            batch: A raw batch from the data loader.
+
+        Returns:
+            Loss value as float, or ``None`` if a rollback was triggered.
+        """
         with self.selgis.get_amp_context():
-            loss, _ = self._forward(batch)
+            loss, logits = self._forward(batch)
+
+        del logits
 
         if not self.selgis.check_loss(loss):
             return None
 
-        # Scale loss for accumulation (so mean over accum_steps)
         accum_steps = max(self.config.gradient_accumulation_steps, 1)
         scaled_loss = loss / accum_steps
         self.selgis.backward_step(scaled_loss)
 
         return loss.item()
 
-    def _forward(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass: custom forward_fn or model(**inputs) / model(inputs) + criterion."""
+    def _forward(
+        self, batch: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass with automatic device management.
+
+        Handles custom ``forward_fn``, dict-like and tuple-like batches,
+        and models using ``hf_device_map``.
+
+        Args:
+            batch: Raw batch from the data loader (typically on CPU).
+
+        Returns:
+            Tuple of ``(loss, logits)``.
+
+        Raises:
+            ValueError: If loss cannot be computed.
+        """
         if self.forward_fn is not None:
+            if not self._has_device_map:
+                batch = move_to_device(batch, self.device)
             return self.forward_fn(self.model, batch)
 
         inputs, labels = unpack_batch(batch)
 
-        # If model has hf_device_map (device_map="auto"), don't move inputs
-        # The model handles device placement internally
-        has_device_map = hasattr(self.model, "hf_device_map")
-
         if is_dict_like(inputs):
             inputs_dict = dict(inputs)
-            # Move inputs to device only if model doesn't use device_map="auto"
-            if not has_device_map:
+            if not self._has_device_map:
                 inputs_dict = move_to_device(inputs_dict, self.device)
+
             outputs = self.model(**inputs_dict)
 
             if hasattr(outputs, "loss") and outputs.loss is not None:
-                logits = outputs.logits if hasattr(outputs, "logits") else outputs
+                logits = (
+                    outputs.logits
+                    if hasattr(outputs, "logits")
+                    else outputs
+                )
                 return outputs.loss, logits
 
-            logits = outputs.logits if hasattr(outputs, "logits") else outputs
+            logits = (
+                outputs.logits
+                if hasattr(outputs, "logits")
+                else outputs
+            )
+
             if labels is not None and self.criterion is not None:
-                if not has_device_map:
+                if not self._has_device_map:
                     labels = move_to_device(labels, self.device)
-                loss = self.criterion(logits, labels)
-                return loss, logits
+                return self.criterion(logits, labels), logits
 
-            raise ValueError("Model doesn't return loss and no criterion provided")
+            raise ValueError(
+                "Model doesn't return loss and no criterion provided"
+            )
 
-        if not has_device_map:
+        if not self._has_device_map:
             inputs = move_to_device(inputs, self.device)
+
         outputs = self.model(inputs)
 
         if self.criterion is None:
             raise ValueError("Criterion required for non-dict input")
-
         if labels is None:
             raise ValueError("Labels required for training")
 
-        if not has_device_map:
+        if not self._has_device_map:
             labels = move_to_device(labels, self.device)
 
-        loss = self.criterion(outputs, labels)
-        return loss, outputs
+        return self.criterion(outputs, labels), outputs
 
     @torch.inference_mode()
     def evaluate(self) -> dict[str, float]:
-        """Run evaluation; returns metrics dict (e.g. loss, accuracy)."""
+        """Run evaluation on the eval data loader.
+
+        Returns:
+            Metrics dictionary (e.g. ``{'loss': 0.5, 'accuracy': 92.0}``).
+        """
         if self.eval_dataloader is None:
             return {}
 
         self.model.eval()
         total_loss = 0.0
+        num_batches = 0
         all_preds: list[torch.Tensor] = []
         all_labels: list[torch.Tensor] = []
         correct = 0
         total = 0
 
-        # Check if model uses device_map="auto"
-        has_device_map = hasattr(self.model, "hf_device_map")
-
         for batch in self.eval_dataloader:
-            # Don't move batch to device if model uses device_map="auto"
-            if not has_device_map:
-                batch = move_to_device(batch, self.device)
+            _, labels = unpack_batch(batch)
 
             with self.selgis.get_amp_context():
                 loss, logits = self._forward(batch)
 
             total_loss += loss.item()
+            num_batches += 1
 
-            if logits.dim() > 1:
-                preds = logits.argmax(dim=-1)
-            else:
-                preds = logits
-
-            _, labels = unpack_batch(batch)
+            preds = (
+                logits.argmax(dim=-1).cpu()
+                if logits.dim() > 1
+                else logits.cpu()
+            )
+            del logits
 
             if labels is not None:
-                if self.compute_metrics is not None:
-                    all_preds.append(preds.cpu())
-                    all_labels.append(labels.cpu())
-                else:
-                    if preds.shape != labels.shape:
-                        preds = preds.view_as(labels)
-                    correct += (preds == labels).sum().item()
-                    total += labels.numel()
+                labels_cpu = (
+                    labels.cpu()
+                    if hasattr(labels, "device")
+                    and labels.device.type != "cpu"
+                    else labels
+                )
 
-        metrics = {"loss": total_loss / len(self.eval_dataloader)}
+                if self.compute_metrics is not None:
+                    all_preds.append(preds)
+                    all_labels.append(labels_cpu)
+                else:
+                    if preds.shape != labels_cpu.shape:
+                        preds = preds.view_as(labels_cpu)
+                    correct += (preds == labels_cpu).sum().item()
+                    total += labels_cpu.numel()
+
+        metrics: dict[str, float] = {
+            "loss": total_loss / max(num_batches, 1),
+        }
 
         if self.compute_metrics is not None and all_preds and all_labels:
-            preds = torch.cat(all_preds)
-            labels = torch.cat(all_labels)
-            metrics.update(self.compute_metrics(preds, labels))
+            preds_cat = torch.cat(all_preds)
+            labels_cat = torch.cat(all_labels)
+            metrics.update(self.compute_metrics(preds_cat, labels_cat))
         elif self.compute_metrics is None and total > 0:
             metrics["accuracy"] = correct / total * 100
 
         self._call_callbacks("on_evaluate", metrics=metrics)
+
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
         return metrics
 
-    def _call_callbacks(self, method: str, **kwargs) -> None:
-        """Invoke callback method on all callbacks."""
+    def _call_callbacks(self, method: str, **kwargs: Any) -> None:
+        """Invoke a callback method on all registered callbacks."""
         for callback in self.callbacks:
-            if hasattr(callback, method):
-                getattr(callback, method)(self, **kwargs)
+            fn = getattr(callback, method, None)
+            if fn is not None:
+                fn(self, **kwargs)
 
     def save_model(self, path: str) -> None:
-        """Save model state_dict to path."""
+        """Save model ``state_dict`` to *path*.
+
+        Args:
+            path: Output file path.
+        """
         torch.save(self.model.state_dict(), path)
 
     def load_model(self, path: str, weights_only: bool = True) -> None:
-        """
-        Load model state_dict from path.
+        """Load model ``state_dict`` from *path*.
 
         Args:
             path: Path to checkpoint file.
-            weights_only: If True (default), load only tensors (safe for untrusted files).
-                Requires PyTorch >= 2.0. Set False only for trusted checkpoints.
+            weights_only: If True (default), load only tensors.
+                Requires PyTorch >= 2.0. Set False only for trusted
+                checkpoints.
         """
-        load_kwargs: dict = {"map_location": self.device}
+        load_kwargs: dict[str, Any] = {"map_location": self.device}
         if weights_only:
             try:
-                state = torch.load(path, **load_kwargs, weights_only=True)
+                state = torch.load(
+                    path, **load_kwargs, weights_only=True,
+                )
             except TypeError:
-                # Fallback with explicit warning for security
-                print("[WARN] weights_only=True not supported (PyTorch < 2.0). Loading with weights_only=False — only use with trusted checkpoints!")
+                print(
+                    "[WARN] weights_only=True not supported "
+                    "(PyTorch < 2.0). Loading with weights_only=False "
+                    "— only use with trusted checkpoints!"
+                )
                 state = torch.load(path, **load_kwargs)
         else:
             state = torch.load(path, **load_kwargs)
@@ -393,10 +499,12 @@ class Trainer:
 
 
 class TransformerTrainer(Trainer):
+    """Trainer for HuggingFace Transformers.
+
+    Supports automatic model/tokenizer loading, PEFT/LoRA adapters,
+    gradient checkpointing, quantization, and device-map offloading.
     """
-    Trainer for HuggingFace Transformers: auto load model/tokenizer,
-    PEFT/LoRA, gradient checkpointing.
-    """
+
     def __init__(
         self,
         model_or_path: Union[nn.Module, str],
@@ -404,35 +512,38 @@ class TransformerTrainer(Trainer):
         train_dataloader: DataLoader,
         eval_dataloader: Optional[DataLoader] = None,
         tokenizer: Any = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
-        """model_or_path: model or pretrained path. config: TransformerConfig. tokenizer: optional."""
+        """Initialize TransformerTrainer.
+
+        Args:
+            model_or_path: A model instance or a pretrained model path.
+            config: Transformer training configuration.
+            train_dataloader: Training data loader.
+            eval_dataloader: Optional evaluation data loader.
+            tokenizer: Optional HuggingFace tokenizer.
+            **kwargs: Extra arguments forwarded to ``Trainer.__init__``.
+        """
         self._transformer_config = config
 
-        # Load model if path provided
         if isinstance(model_or_path, str):
             model = self._load_model(model_or_path, config)
         else:
             model = model_or_path
 
-        # Gradient checkpointing
         if config.gradient_checkpointing:
             if hasattr(model, "gradient_checkpointing_enable"):
                 model.gradient_checkpointing_enable()
 
-        # PEFT/LoRA
         if config.use_peft and config.peft_config:
-            model = self._apply_peft(model, config.peft_config, config.problem_type)
+            model = self._apply_peft(
+                model, config.peft_config, config.problem_type,
+            )
 
-        # Create optimizer with proper param groups
-        from selgis.utils import get_optimizer_grouped_params
-
-        param_groups = get_optimizer_grouped_params(model, config.weight_decay)
+        param_groups = get_optimizer_grouped_params(
+            model, config.weight_decay,
+        )
         optimizer = self._create_optimizer(param_groups, config)
-
-        # CPU Offload setup warning
-        if getattr(config, "cpu_offload", False):
-            print("[INFO] CPU Offload enabled: optimizer states and gradients will be offloaded to CPU")
 
         super().__init__(
             model=model,
@@ -445,13 +556,22 @@ class TransformerTrainer(Trainer):
 
         self.tokenizer = tokenizer
 
-    def _load_model(self, path: str, config: TransformerConfig) -> nn.Module:
-        """
-        Load HuggingFace model by path and problem_type.
+    def _load_model(
+        self, path: str, config: TransformerConfig,
+    ) -> nn.Module:
+        """Load a HuggingFace model by path and ``problem_type``.
+
+        Args:
+            path: Pretrained model name or path.
+            config: Transformer configuration with ``problem_type``,
+                quantization, and device-map settings.
+
+        Returns:
+            Loaded model instance.
 
         Raises:
-            ImportError: If transformers is not installed.
-            ValueError: If problem_type is not supported.
+            ImportError: If ``transformers`` is not installed.
+            ValueError: If ``problem_type`` is not supported.
         """
         try:
             from transformers import (
@@ -461,59 +581,33 @@ class TransformerTrainer(Trainer):
                 AutoModelForSequenceClassification,
             )
         except ImportError:
-            raise ImportError("Install transformers: pip install transformers") from None
+            raise ImportError(
+                "Install transformers: pip install transformers"
+            ) from None
 
-        # BitsAndBytes Config
-        bnb_config = None
-        if config.quantization_type != "no":
-            try:
-                from transformers import BitsAndBytesConfig
-                import torch
+        bnb_config = self._build_bnb_config(config)
 
-                if config.quantization_type == "8bit":
-                    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-                    print("[INFO] Quantization: 8-bit enabled")
-                elif config.quantization_type == "4bit":
-                    compute_dtype = getattr(torch, config.bnb_4bit_compute_dtype)
-                    bnb_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=compute_dtype,
-                        bnb_4bit_quant_type=config.bnb_4bit_quant_type,
-                        bnb_4bit_use_double_quant=config.bnb_4bit_use_double_quant,
-                    )
-                    print(f"[INFO] Quantization: 4-bit enabled ({config.bnb_4bit_quant_type})")
-            except ImportError:
-                print("[WARN] bitsandbytes or transformers not installed/compatible. Proceeding without quantization.")
-            except Exception as e:
-                print(f"[WARN] Failed to configure quantization: {e}. Proceeding without it.")
+        device_map = getattr(config, "device_map", None)
+        trust_remote = getattr(config, "trust_remote_code", False)
 
-        # CPU Offload setup
-        cpu_offload = getattr(config, "cpu_offload", False)
-        device_map = None
-        if cpu_offload:
-            # Use device_map="auto" for automatic CPU offload with large models
-            device_map = "auto"
-            print("[INFO] CPU Offload: using device_map='auto' for memory efficiency")
-
-        num_labels = config.num_labels
-        trust = True
-        load_kw = {
-            "trust_remote_code": trust,
-            "quantization_config": bnb_config
+        load_kw: dict[str, Any] = {
+            "trust_remote_code": trust_remote,
         }
-
-        # Add device_map if using CPU offload
+        if bnb_config is not None:
+            load_kw["quantization_config"] = bnb_config
         if device_map is not None:
             load_kw["device_map"] = device_map
 
-        # Remove quantization_config if None (to avoid errors if not supported by all loaders)
-        if bnb_config is None:
-            load_kw.pop("quantization_config")
-
         model_loaders = {
-            "causal_lm": lambda: AutoModelForCausalLM.from_pretrained(path, **load_kw),
-            "seq2seq": lambda: AutoModelForSeq2SeqLM.from_pretrained(path, **load_kw),
-            "masked_lm": lambda: AutoModelForMaskedLM.from_pretrained(path, **load_kw),
+            "causal_lm": lambda: AutoModelForCausalLM.from_pretrained(
+                path, **load_kw,
+            ),
+            "seq2seq": lambda: AutoModelForSeq2SeqLM.from_pretrained(
+                path, **load_kw,
+            ),
+            "masked_lm": lambda: AutoModelForMaskedLM.from_pretrained(
+                path, **load_kw,
+            ),
         }
 
         if config.problem_type in model_loaders:
@@ -526,7 +620,7 @@ class TransformerTrainer(Trainer):
         ):
             return AutoModelForSequenceClassification.from_pretrained(
                 path,
-                num_labels=num_labels,
+                num_labels=config.num_labels,
                 **load_kw,
             )
 
@@ -539,9 +633,61 @@ class TransformerTrainer(Trainer):
             "masked_lm",
         )
         raise ValueError(
-            f"Unsupported problem_type: {config.problem_type!r}.  "
+            f"Unsupported problem_type: {config.problem_type!r}. "
             f"Supported: {', '.join(supported)}"
         )
+
+    @staticmethod
+    def _build_bnb_config(config: TransformerConfig):
+        """Build BitsAndBytes quantization config if requested.
+
+        Args:
+            config: Transformer configuration.
+
+        Returns:
+            A ``BitsAndBytesConfig`` instance, or ``None`` if
+            quantization is disabled or unavailable.
+        """
+        if config.quantization_type == "no":
+            return None
+
+        try:
+            from transformers import BitsAndBytesConfig
+        except ImportError:
+            print(
+                "[WARN] bitsandbytes/transformers not available. "
+                "Proceeding without quantization."
+            )
+            return None
+
+        try:
+            if config.quantization_type == "8bit":
+                print("[INFO] Quantization: 8-bit enabled")
+                return BitsAndBytesConfig(load_in_8bit=True)
+
+            if config.quantization_type == "4bit":
+                compute_dtype = getattr(
+                    torch, config.bnb_4bit_compute_dtype,
+                )
+                print(
+                    f"[INFO] Quantization: 4-bit enabled "
+                    f"({config.bnb_4bit_quant_type})"
+                )
+                return BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_quant_type=config.bnb_4bit_quant_type,
+                    bnb_4bit_use_double_quant=(
+                        config.bnb_4bit_use_double_quant
+                    ),
+                )
+        except Exception as exc:
+            print(
+                f"[WARN] Failed to configure quantization: {exc}. "
+                f"Proceeding without it."
+            )
+
+        return None
 
     def _apply_peft(
         self,
@@ -549,66 +695,100 @@ class TransformerTrainer(Trainer):
         peft_config: dict,
         problem_type: Optional[str] = None,
     ) -> nn.Module:
-        """Apply PEFT/LoRA to model. Returns model with adapters."""
+        """Apply PEFT/LoRA adapters to the model.
+
+        Args:
+            model: Base model.
+            peft_config: LoRA configuration dictionary.
+            problem_type: Optional problem type for task-type inference.
+
+        Returns:
+            Model wrapped with PEFT adapters.
+
+        Raises:
+            ImportError: If ``peft`` is not installed.
+        """
         try:
-            from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_kbit_training
-
-            # Check if model is quantized or using CPU offload
-            is_quantized = (
-                getattr(model, "is_loaded_in_8bit", False) or
-                getattr(model, "is_loaded_in_4bit", False) or
-                hasattr(model, "hf_device_map")  # device_map="auto" implies offload
+            from peft import (
+                LoraConfig,
+                TaskType,
+                get_peft_model,
+                prepare_model_for_kbit_training,
             )
-
-            if is_quantized:
-                model = prepare_model_for_kbit_training(model)
-
-            task_type_mapping = {
-                "causal_lm": TaskType.CAUSAL_LM,
-                "seq2seq": TaskType.SEQ_2_SEQ_LM,
-                "token_classification": TaskType.TOKEN_CLS,
-                "question_answering": TaskType.QUESTION_ANS,
-                "feature_extraction": TaskType.FEATURE_EXTRACTION,
-            }
-
-            if "task_type" in peft_config:
-                task_type_value = peft_config["task_type"]
-                if isinstance(task_type_value, str):
-                    task_type = task_type_mapping.get(task_type_value.lower(), TaskType.SEQ_CLS)
-                else:
-                    task_type = task_type_value
-            elif problem_type:
-                task_type = task_type_mapping.get(problem_type, TaskType.SEQ_CLS)
-            else:
-                task_type = TaskType.SEQ_CLS
-
-            filtered_config = {k: v for k, v in peft_config.items() if k != "task_type"}
-
-            lora_config = LoraConfig(
-                task_type=task_type,
-                **filtered_config,
-            )
-
-            peft_model = get_peft_model(model, lora_config)
-
-            trainable_params = sum(p.numel() for p in peft_model.parameters() if p.requires_grad)
-            total_params = sum(p.numel() for p in peft_model.parameters())
-            print(f"[INFO] LoRA applied: {trainable_params:,} / {total_params:,} params trainable  "
-                  f"({100 * trainable_params / total_params:.2f}%)")
-
-            return peft_model
-
         except ImportError:
             raise ImportError(
-                "PEFT is required when use_peft=True. Install with: pip install peft"
+                "PEFT is required when use_peft=True. "
+                "Install with: pip install peft"
             ) from None
+
+        is_quantized = (
+            getattr(model, "is_loaded_in_8bit", False)
+            or getattr(model, "is_loaded_in_4bit", False)
+        )
+        if is_quantized:
+            model = prepare_model_for_kbit_training(model)
+
+        task_type_mapping = {
+            "causal_lm": TaskType.CAUSAL_LM,
+            "seq2seq": TaskType.SEQ_2_SEQ_LM,
+            "token_classification": TaskType.TOKEN_CLS,
+            "question_answering": TaskType.QUESTION_ANS,
+            "feature_extraction": TaskType.FEATURE_EXTRACTION,
+        }
+
+        if "task_type" in peft_config:
+            task_type_value = peft_config["task_type"]
+            if isinstance(task_type_value, str):
+                task_type = task_type_mapping.get(
+                    task_type_value.lower(), TaskType.SEQ_CLS,
+                )
+            else:
+                task_type = task_type_value
+        elif problem_type:
+            task_type = task_type_mapping.get(
+                problem_type, TaskType.SEQ_CLS,
+            )
+        else:
+            task_type = TaskType.SEQ_CLS
+
+        filtered_config = {
+            k: v for k, v in peft_config.items() if k != "task_type"
+        }
+        lora_config = LoraConfig(task_type=task_type, **filtered_config)
+        peft_model = get_peft_model(model, lora_config)
+
+        trainable_params = sum(
+            p.numel()
+            for p in peft_model.parameters()
+            if p.requires_grad
+        )
+        total_params = sum(
+            p.numel() for p in peft_model.parameters()
+        )
+        print(
+            f"[INFO] LoRA applied: {trainable_params:,} / "
+            f"{total_params:,} params trainable "
+            f"({100 * trainable_params / total_params:.2f}%)"
+        )
+
+        return peft_model
 
     def _create_optimizer(
         self,
         param_groups: list[dict],
         config: TransformerConfig,
     ) -> optim.Optimizer:
-        """Create optimizer from config (adamw, adam, sgd, adafactor)."""
+        """Create optimizer from configuration.
+
+        Supports ``adamw``, ``adam``, ``sgd``, and ``adafactor``.
+
+        Args:
+            param_groups: Parameter groups with weight decay settings.
+            config: Transformer configuration.
+
+        Returns:
+            Configured optimizer instance.
+        """
         if config.optimizer_type == "adamw":
             return optim.AdamW(
                 param_groups,
@@ -643,12 +823,19 @@ class TransformerTrainer(Trainer):
                     warmup_init=False,
                 )
             except ImportError:
-                print("[WARN] Adafactor not available, falling back to AdamW")
+                print(
+                    "[WARN] Adafactor not available, "
+                    "falling back to AdamW"
+                )
 
         return optim.AdamW(param_groups, lr=config.learning_rate)
 
     def save_pretrained(self, path: str) -> None:
-        """Save model in HuggingFace format (adapters only for PEFT)."""
+        """Save model in HuggingFace format (adapters only for PEFT).
+
+        Args:
+            path: Output directory path.
+        """
         if hasattr(self.model, "save_pretrained"):
             self.model.save_pretrained(path)
             if self.tokenizer:
@@ -657,12 +844,25 @@ class TransformerTrainer(Trainer):
         else:
             self.save_model(f"{path}/pytorch_model.pt")
 
-    def push_to_hub(self, repo_id: str, **kwargs) -> None:
-        """Push model (and tokenizer) to HuggingFace Hub."""
-        if hasattr(self.model, "push_to_hub"):
-            self.model.push_to_hub(repo_id, **kwargs)
-            if self.tokenizer:
-                self.tokenizer.push_to_hub(repo_id, **kwargs)
-            print(f"[INFO] Model pushed to https://huggingface.co/{repo_id}")
-        else:
-            raise ValueError("Model doesn't support push_to_hub. Use save_pretrained instead.")
+    def push_to_hub(self, repo_id: str, **kwargs: Any) -> None:
+        """Push model and tokenizer to HuggingFace Hub.
+
+        Args:
+            repo_id: Repository ID on HuggingFace Hub.
+            **kwargs: Extra arguments for ``push_to_hub``.
+
+        Raises:
+            ValueError: If the model doesn't support ``push_to_hub``.
+        """
+        if not hasattr(self.model, "push_to_hub"):
+            raise ValueError(
+                "Model doesn't support push_to_hub. "
+                "Use save_pretrained instead."
+            )
+        self.model.push_to_hub(repo_id, **kwargs)
+        if self.tokenizer:
+            self.tokenizer.push_to_hub(repo_id, **kwargs)
+        print(
+            f"[INFO] Model pushed to "
+            f"https://huggingface.co/{repo_id}"
+        )

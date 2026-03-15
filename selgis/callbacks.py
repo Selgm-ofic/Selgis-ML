@@ -1,53 +1,70 @@
-"""Callback system for training hooks (logging, checkpoints, early stopping, WandB, sparsity)."""
+"""Callback system for training hooks."""
 from __future__ import annotations
+
 import json
 import shutil
 from abc import ABC
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
+
 import torch
 import torch.nn as nn
 
+
 class Callback(ABC):
-    """Base callback; override any of on_train_begin/end, on_epoch_begin/end, on_step_begin/end, on_evaluate."""
-    def on_train_begin(self, trainer: "Trainer") -> None:
-        pass
+    """Base callback with no-op defaults for all hooks."""
 
-    def on_train_end(self, trainer: "Trainer") -> None:
-        pass
+    def on_train_begin(self, trainer: Trainer) -> None:
+        """Called once at the start of training."""
 
-    def on_epoch_begin(self, trainer: "Trainer", epoch: int) -> None:
-        pass
+    def on_train_end(self, trainer: Trainer) -> None:
+        """Called once at the end of training."""
+
+    def on_epoch_begin(
+        self, trainer: Trainer, epoch: int,
+    ) -> None:
+        """Called at the start of each epoch."""
 
     def on_epoch_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         epoch: int,
         metrics: dict[str, float],
     ) -> None:
-        pass
+        """Called at the end of each epoch with computed metrics."""
 
-    def on_step_begin(self, trainer: "Trainer", step: int) -> None:
-        pass
+    def on_step_begin(
+        self, trainer: Trainer, step: int,
+    ) -> None:
+        """Called before each training step."""
 
     def on_step_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         step: int,
         loss: float,
     ) -> None:
-        pass
+        """Called after each training step."""
 
     def on_evaluate(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         metrics: dict[str, float],
     ) -> None:
-        pass
+        """Called after evaluation."""
 
 
 class EarlyStoppingCallback(Callback):
-    """Early stopping based on a metric (min or max)."""
+    """Early stopping based on a monitored metric.
+
+    Args:
+        patience: Epochs without improvement before stopping.
+        min_delta: Minimum change to qualify as improvement.
+        metric: Metric key to monitor.
+        mode: ``"min"`` or ``"max"``.
+    """
+
     def __init__(
         self,
         patience: int = 5,
@@ -59,17 +76,19 @@ class EarlyStoppingCallback(Callback):
         self.min_delta = min_delta
         self.metric = metric
         self.mode = mode
-
-        self._best = float("inf") if mode == "min" else float("-inf")
+        self._best = (
+            float("inf") if mode == "min" else float("-inf")
+        )
         self._counter = 0
         self._should_stop = False
 
     def on_epoch_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         epoch: int,
         metrics: dict[str, float],
     ) -> None:
+        """Check metric improvement; set stop flag if exhausted."""
         value = metrics.get(self.metric, 0.0)
 
         if self.mode == "min":
@@ -85,15 +104,24 @@ class EarlyStoppingCallback(Callback):
 
         if self._counter >= self.patience:
             self._should_stop = True
-            print(f"\n[INFO] Early stopping: no improvement for {self.patience} epochs")
+            print(
+                f"\n[INFO] Early stopping: no improvement "
+                f"for {self.patience} epochs"
+            )
 
     @property
     def should_stop(self) -> bool:
+        """Whether training should stop."""
         return self._should_stop
 
 
 class HistoryCallback(Callback):
-    """Save comprehensive training history to JSON."""
+    """Save training history to a JSON file.
+
+    Args:
+        output_dir: Directory where ``training_history.json`` is saved.
+    """
+
     def __init__(self, output_dir: str = "./output") -> None:
         self.output_dir = Path(output_dir)
         self.history: list[dict[str, Any]] = []
@@ -101,30 +129,49 @@ class HistoryCallback(Callback):
 
     def on_epoch_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         epoch: int,
         metrics: dict[str, float],
     ) -> None:
-        # Collect all metrics and info
-        record = {
-            "epoch": epoch,
-            "global_step": getattr(trainer, "_global_step", 0),
-            "metrics": metrics,
-        }
-        self.history.append(record)
+        """Record epoch metrics."""
+        self.history.append(
+            {
+                "epoch": epoch,
+                "global_step": getattr(trainer, "_global_step", 0),
+                "metrics": metrics,
+            },
+        )
 
-    def on_train_end(self, trainer: "Trainer") -> None:
+    def on_train_end(self, trainer: Trainer) -> None:
+        """Write full history to disk."""
         path = self.output_dir / "training_history.json"
-        
-        # Collect system/config info
+
+        try:
+            config_dict = asdict(trainer.config)
+        except (TypeError, Exception):
+            config_dict = str(trainer.config)
+
+        serializable_config: dict[str, Any] = {}
+        if isinstance(config_dict, dict):
+            for k, v in config_dict.items():
+                try:
+                    json.dumps(v)
+                    serializable_config[k] = v
+                except (TypeError, ValueError):
+                    serializable_config[k] = str(v)
+        else:
+            serializable_config = {"raw": config_dict}
+
         info = {
-            "config": getattr(trainer.config, "__dict__", str(trainer.config)),
+            "config": serializable_config,
             "model_type": type(trainer.model).__name__,
             "total_epochs": len(self.history),
-            "final_metrics": self.history[-1]["metrics"] if self.history else {},
-            "history": self.history
+            "final_metrics": (
+                self.history[-1]["metrics"] if self.history else {}
+            ),
+            "history": self.history,
         }
-        
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(info, f, indent=2, ensure_ascii=False)
         print(f"[SAVE] Training history saved: {path}")
@@ -134,7 +181,16 @@ BEST_MODEL_DIRNAME = "best_model"
 
 
 class CheckpointCallback(Callback):
-    """Save checkpoints (best and/or periodic); optional total limit."""
+    """Save model checkpoints with optional rotation.
+
+    Args:
+        output_dir: Base directory for checkpoints.
+        save_best_only: If True, only save on metric improvement.
+        save_total_limit: Maximum number of regular checkpoints.
+        metric: Metric key to determine best checkpoint.
+        mode: ``"min"`` or ``"max"``.
+    """
+
     def __init__(
         self,
         output_dir: str,
@@ -148,18 +204,20 @@ class CheckpointCallback(Callback):
         self.save_total_limit = save_total_limit
         self.metric = metric
         self.mode = mode
-        self._best = float("inf") if mode == "min" else float("-inf")
+        self._best = (
+            float("inf") if mode == "min" else float("-inf")
+        )
         self._saved_checkpoints: list[Path] = []
-        self._protected_paths: set[Path] = set()
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def on_epoch_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         epoch: int,
         metrics: dict[str, float],
     ) -> None:
+        """Save checkpoint (and best checkpoint) when appropriate."""
         value = metrics.get(self.metric, 0.0)
 
         if self.mode == "min":
@@ -173,91 +231,136 @@ class CheckpointCallback(Callback):
         if self.save_best_only and not is_best:
             return
 
-        # Save checkpoint
         ckpt_path = self.output_dir / f"checkpoint-epoch-{epoch}"
         self._save_checkpoint(trainer, ckpt_path, metrics, epoch)
+        self._saved_checkpoints.append(ckpt_path)
 
         if is_best:
             best_path = self.output_dir / BEST_MODEL_DIRNAME
             self._save_checkpoint(trainer, best_path, metrics, epoch)
-            self._protected_paths.add(best_path.resolve())
 
         self._cleanup()
 
     def _save_checkpoint(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         path: Path,
         metrics: dict[str, float],
         epoch: int,
     ) -> None:
-        """Save model (trainable), optimizer, scheduler, and training step for resume."""
+        """Save model weights, optimizer, scheduler, and metadata.
+
+        Only trainable parameters are saved for the model to reduce
+        checkpoint size when using PEFT/LoRA.
+        """
         path.mkdir(parents=True, exist_ok=True)
 
         state_dict = {}
         for name, param in trainer.model.named_parameters():
             if param.requires_grad:
-                state_dict[name] = param.data.cpu()
+                if param.device.type == "cpu":
+                    state_dict[name] = param.detach().clone()
+                else:
+                    state_dict[name] = param.detach().cpu()
         torch.save(state_dict, path / "model.pt")
 
-        torch.save(trainer.optimizer.state_dict(), path / "optimizer.pt")
+        torch.save(
+            trainer.optimizer.state_dict(),
+            path / "optimizer.pt",
+        )
 
-        if hasattr(trainer, "scheduler") and trainer.scheduler is not None:
-            if hasattr(trainer.scheduler, "state_dict"):
-                torch.save(trainer.scheduler.state_dict(), path / "scheduler.pt")
+        if (
+            hasattr(trainer, "scheduler")
+            and trainer.scheduler is not None
+            and hasattr(trainer.scheduler, "state_dict")
+        ):
+            torch.save(
+                trainer.scheduler.state_dict(),
+                path / "scheduler.pt",
+            )
 
         global_step = getattr(trainer, "_global_step", 0)
-        with open(path / "metrics.json", "w") as f:
-            json.dump({"epoch": epoch, "global_step": global_step, **metrics}, f, indent=2)
+        meta = {
+            "epoch": epoch,
+            "global_step": global_step,
+            **metrics,
+        }
+        with open(path / "metrics.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
 
-        self._saved_checkpoints.append(path)
         print(f"[SAVE] Saved: {path}")
 
     def _cleanup(self) -> None:
-        """Remove old checkpoints beyond save_total_limit; keep protected (e.g. best_model)."""
-        protected_resolved = {p.resolve() for p in self._protected_paths}
-        regular = [p for p in self._saved_checkpoints if p.resolve() not in protected_resolved]
+        """Remove oldest regular checkpoints beyond the limit.
 
-        while len(regular) > self.save_total_limit:
-            oldest = regular.pop(0)
+        The ``best_model`` directory is never removed.
+        """
+        best_resolved = (
+            self.output_dir / BEST_MODEL_DIRNAME
+        ).resolve()
+
+        while len(self._saved_checkpoints) > self.save_total_limit:
+            oldest = self._saved_checkpoints.pop(0)
+            if oldest.resolve() == best_resolved:
+                continue
             if oldest.exists():
                 shutil.rmtree(oldest)
-            self._saved_checkpoints.remove(oldest)
 
 
 class LoggingCallback(Callback):
-    """Console logging: step loss/LR and epoch metrics."""
+    """Console logging of step losses and epoch metrics.
+
+    Args:
+        log_every: Log every *n* steps.
+    """
+
     def __init__(self, log_every: int = 10) -> None:
         self.log_every = log_every
-        self._step_losses: list[float] = []
 
-    def on_train_begin(self, trainer: "Trainer") -> None:
+    def on_train_begin(self, trainer: Trainer) -> None:
+        """Print training start banner."""
         print("-" * 40)
         print("[INFO] Training started")
         print("-" * 40)
 
-    def on_train_end(self, trainer: "Trainer") -> None:
+    def on_train_end(self, trainer: Trainer) -> None:
+        """Print training end banner."""
         print("-" * 40)
         print("[INFO] Training complete")
         print("-" * 40)
 
     def on_epoch_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         epoch: int,
         metrics: dict[str, float],
     ) -> None:
-        metrics_str = " | ".join(f"{k}: {v:.4f}" for k, v in metrics.items())
+        """Print epoch summary metrics."""
+        metrics_str = " | ".join(
+            f"{k}: {v:.4f}" for k, v in metrics.items()
+        )
         print(f"[INFO] Epoch {epoch} | {metrics_str}")
 
-    def on_step_end(self, trainer: "Trainer", step: int, loss: float) -> None:
+    def on_step_end(
+        self, trainer: Trainer, step: int, loss: float,
+    ) -> None:
+        """Print step loss and LR at configured intervals."""
         if step % self.log_every == 0:
             lr = trainer.optimizer.param_groups[0]["lr"]
-            print(f"  Step {step:6d} | Loss: {loss:.4f} | LR: {lr:.2e}")
+            print(
+                f"  Step {step:6d} | Loss: {loss:.4f} | LR: {lr:.2e}"
+            )
 
 
 class WandBCallback(Callback):
-    """Weights & Biases logging (step loss, epoch metrics)."""
+    """Weights and Biases logging.
+
+    Args:
+        project: W&B project name.
+        name: Optional run name.
+        config: Optional config dict to log.
+    """
+
     def __init__(
         self,
         project: str,
@@ -267,45 +370,72 @@ class WandBCallback(Callback):
         self.project = project
         self.name = name
         self.config = config
-        self._run = None
+        self._wandb = None
 
-    def on_train_begin(self, trainer: "Trainer") -> None:
+    def on_train_begin(self, trainer: Trainer) -> None:
+        """Initialize W&B run."""
         try:
             import wandb
-            self._run = wandb.init(
+
+            self._wandb = wandb
+            wandb.init(
                 project=self.project,
                 name=self.name,
                 config=self.config,
             )
         except ImportError:
-            print("[WARN] wandb not installed, skipping WandB logging")
+            print(
+                "[WARN] wandb not installed, skipping WandB logging"
+            )
 
-    def on_step_end(self, trainer: "Trainer", step: int, loss: float) -> None:
-        if self._run:
-            import wandb
-            wandb.log({"train/loss": loss, "train/step": step})
+    def on_step_end(
+        self, trainer: Trainer, step: int, loss: float,
+    ) -> None:
+        """Log step loss."""
+        if self._wandb is not None:
+            self._wandb.log(
+                {"train/loss": loss, "train/step": step},
+            )
 
     def on_epoch_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         epoch: int,
         metrics: dict[str, float],
     ) -> None:
-        if self._run:
-            import wandb
-            wandb.log({"epoch": epoch, **{f"eval/{k}": v for k, v in metrics.items()}})
+        """Log epoch metrics."""
+        if self._wandb is not None:
+            self._wandb.log(
+                {
+                    "epoch": epoch,
+                    **{f"eval/{k}": v for k, v in metrics.items()},
+                },
+            )
 
-    def on_train_end(self, trainer: "Trainer") -> None:
-        if self._run:
-            import wandb
-            wandb.finish()
+    def on_train_end(self, trainer: Trainer) -> None:
+        """Finish W&B run."""
+        if self._wandb is not None:
+            self._wandb.finish()
 
 
 class SparsityCallback(Callback):
+    """Magnitude pruning for trainable parameters.
+
+    Applies per-layer unstructured pruning to ``Linear`` and ``Conv``
+    modules.  Suited for LoRA/PEFT where most weights are frozen.
+
+    Args:
+        target_sparsity: Fraction of weights to zero (0.0–1.0).
+        start_epoch: First epoch to apply pruning.
+        frequency: Apply every *n* epochs after ``start_epoch``.
+        skip_lora: Skip LoRA adapter layers.
+        min_params_to_prune: Minimum layer size to consider.
+        log_details: Print per-layer sparsity.
     """
-    Memory-safe magnitude pruning: per-layer, trainable params only.
-    Suited for LoRA/PEFT where most weights are frozen.
-    """
+
+    _SKIP_SUFFIXES = (".bias", ".norm", ".layer_norm")
+    _SKIP_PREFIXES = ("embed",)
+
     def __init__(
         self,
         target_sparsity: float = 0.5,
@@ -315,10 +445,6 @@ class SparsityCallback(Callback):
         min_params_to_prune: int = 1000,
         log_details: bool = False,
     ) -> None:
-        """
-        target_sparsity: fraction of weights to zero (0–1). start_epoch/frequency: when to apply.
-        skip_lora: skip LoRA adapter params. min_params_to_prune: min layer size. log_details: per-layer log.
-        """
         if not 0.0 <= target_sparsity <= 1.0:
             raise ValueError("target_sparsity must be in [0.0, 1.0]")
 
@@ -332,17 +458,15 @@ class SparsityCallback(Callback):
 
     def on_epoch_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         epoch: int,
         metrics: dict[str, float],
     ) -> None:
-        """Apply magnitude pruning after epoch (if frequency matches)."""
+        """Apply magnitude pruning if the epoch matches the schedule."""
         if epoch < self.start_epoch:
             return
-
         if (epoch - self.start_epoch) % self.frequency != 0:
             return
-
         if self.target_sparsity <= 0:
             return
 
@@ -350,80 +474,135 @@ class SparsityCallback(Callback):
 
         if pruned_layers > 0:
             self._applied_epochs.append(epoch)
-            total_sparsity = self._compute_model_sparsity(trainer.model)
-            
+            total_sparsity = self._compute_model_sparsity(
+                trainer.model,
+            )
             print(
-                f"[INFO] Sparsity applied: target={self.target_sparsity:.2%},  "
-                f"actual={total_sparsity:.2%}, pruned_layers={pruned_layers}"
+                f"[INFO] Sparsity applied: "
+                f"target={self.target_sparsity:.2%}, "
+                f"actual={total_sparsity:.2%}, "
+                f"pruned_layers={pruned_layers}"
             )
 
+    def _should_skip(self, name: str) -> bool:
+        """Return True if the named module should not be pruned."""
+        lower = name.lower()
+        if self.skip_lora and "lora" in lower:
+            return True
+
+        parts = lower.split(".")
+        last_part = parts[-1] if parts else lower
+
+        for suffix in self._SKIP_SUFFIXES:
+            if last_part == suffix.lstrip("."):
+                return True
+
+        for prefix in self._SKIP_PREFIXES:
+            if last_part.startswith(prefix):
+                return True
+
+        return False
+
     def _apply_local_pruning(self, model: nn.Module) -> int:
-        """Apply magnitude pruning per layer (Linear/Conv). Returns number of pruned layers."""
+        """Apply magnitude pruning to eligible layers.
+
+        Args:
+            model: Model to prune.
+
+        Returns:
+            Number of layers pruned.
+        """
         pruned_count = 0
 
         for name, module in model.named_modules():
-            if not isinstance(module, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+            if not isinstance(
+                module,
+                (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d),
+            ):
                 continue
-            if not hasattr(module, "weight") or not module.weight.requires_grad:
+            if (
+                not hasattr(module, "weight")
+                or not module.weight.requires_grad
+            ):
                 continue
-            if self.skip_lora and "lora" in name.lower():
+            if self._should_skip(name):
                 continue
             if module.weight.numel() < self.min_params_to_prune:
                 continue
-            # Fixed: precise layer name matching to avoid false positives
-            if any(skip in name.lower() for skip in ["bias", ".norm", ".layer_norm", ".embed"]):
-                continue
+
             self._prune_layer(module, name)
             pruned_count += 1
 
         return pruned_count
 
     def _prune_layer(self, module: nn.Module, name: str) -> None:
-        """Prune one layer in-place by magnitude (zero smallest weights)."""
+        """Zero the smallest weights in a single layer.
+
+        Args:
+            module: Layer whose ``weight`` tensor will be pruned.
+            name: Module name (for logging).
+        """
         with torch.no_grad():
             weight = module.weight.data
             flat = weight.abs().view(-1)
             k = int(flat.numel() * self.target_sparsity)
 
-            if k > 0 and k < flat.numel():
-                threshold = torch.kthvalue(flat, k).values.item()
-                mask = weight.abs() >= threshold
-                weight.mul_(mask)
+            if k <= 0 or k >= flat.numel():
+                return
 
-                if self.log_details:
-                    actual_sparsity = (weight == 0).sum().item() / weight.numel()
-                    print(f"      Layer {name}: sparsity={actual_sparsity:.2%}")
+            threshold = torch.kthvalue(flat, k).values.item()
+            mask = weight.abs() >= threshold
+            weight.mul_(mask)
 
-    def _compute_model_sparsity(self, model: nn.Module) -> float:
-        """Compute fraction of zero trainable params (0–1), memory-safe."""
+            if self.log_details:
+                actual = (
+                    (weight == 0).sum().item() / weight.numel()
+                )
+                print(
+                    f"      Layer {name}: "
+                    f"sparsity={actual:.2%}"
+                )
+
+    @staticmethod
+    def _compute_model_sparsity(model: nn.Module) -> float:
+        """Compute fraction of zero trainable parameters.
+
+        Args:
+            model: Model to inspect.
+
+        Returns:
+            Sparsity ratio in ``[0.0, 1.0]``.
+        """
         total_params = 0
         zero_params = 0
-        
+
         for param in model.parameters():
             if not param.requires_grad:
                 continue
-                
             total_params += param.numel()
             zero_params += (param.data == 0).sum().item()
-        
+
         if total_params == 0:
             return 0.0
-            
         return zero_params / total_params
 
-    def get_layer_sparsity(self, model: nn.Module) -> dict[str, float]:
-        """Return dict of layer_name -> sparsity (fraction of zeros) for trainable params."""
-        result = {}
-        
+    def get_layer_sparsity(
+        self, model: nn.Module,
+    ) -> dict[str, float]:
+        """Return per-parameter sparsity for trainable parameters.
+
+        Args:
+            model: Model to inspect.
+
+        Returns:
+            Dictionary mapping parameter names to sparsity ratios.
+        """
+        result: dict[str, float] = {}
+
         for name, param in model.named_parameters():
-            if not param.requires_grad:
+            if not param.requires_grad or param.numel() == 0:
                 continue
-                
-            if param.numel() == 0:
-                continue
-                
             zeros = (param.data == 0).sum().item()
-            sparsity = zeros / param.numel()
-            result[name] = sparsity
-            
+            result[name] = zeros / param.numel()
+
         return result

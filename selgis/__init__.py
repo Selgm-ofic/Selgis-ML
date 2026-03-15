@@ -13,7 +13,7 @@ def _get_version() -> str:
         from importlib.metadata import version
         return version("selgis")
     except Exception:
-        return "0.2.3"
+        return "0.2.2"
 
 
 __version__ = _get_version()
