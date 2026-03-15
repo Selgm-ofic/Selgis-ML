@@ -1,3 +1,4 @@
+```markdown
 # Selgis ML
 
 > Make training boring (in a good way).
@@ -70,6 +71,7 @@ from selgis import TransformerTrainer, TransformerConfig
 config = TransformerConfig(
     model_name_or_path="Qwen/Qwen-2.5-3B",
     use_peft=True,
+    peft_config={"r": 16, "lora_alpha": 32, "target_modules": ["q_proj", "v_proj"]},
     quantization_type="4bit",
 )
 
@@ -94,6 +96,7 @@ config = TransformerConfig(
     },
     nan_recovery=True,
     cpu_offload=True,
+    device_map="auto",
     gradient_checkpointing=True,
 )
 
@@ -102,9 +105,9 @@ trainer.train()
 ```
 
 **What happens under the hood:**
-- **LRFinder** automatically finds optimal learning rate before training starts
-- **Nan Recovery** monitors every step and rollbacks on anomalies
+- **Nan Recovery** monitors every step and rolls back on anomalies (with persistent LR reduction)
 - **CPU Offload** saves ~40% VRAM by offloading optimizer states to CPU
+- **Device Map** distributes model layers across GPU and CPU
 - **Gradient Checkpointing** reduces memory by another 40%
 - **Final Surge** pushes the model out of plateaus automatically
 
@@ -119,6 +122,10 @@ Quick training without writing code:
 cat > config.yaml << EOF
 model_name_or_path: "Qwen/Qwen-2.5-3B"
 use_peft: true
+peft_config:
+  r: 16
+  lora_alpha: 32
+  target_modules: ["q_proj", "v_proj"]
 quantization_type: "4bit"
 max_epochs: 10
 EOF
@@ -154,12 +161,14 @@ from selgis import Trainer, SelgisConfig
 
 config = SelgisConfig(
     max_epochs=10,
+    learning_rate=1e-3,
     lr_finder_enabled=True,
     spike_threshold=3.0,
     cpu_offload=True,
     fp16=True,
     grad_clip_norm=1.0,
     save_best_only=True,
+    primary_metric="accuracy",
 )
 
 trainer = Trainer(
@@ -184,7 +193,8 @@ Selgis doesn't just prevent errors — it **returns training to a productive tra
 |                                                             |
 |  [DETECTED] Loss spike (380x above average)                |
 |  [ACTION]  Rolling back to last stable state (step 450)    |
-|  [ACTION]  Reducing LR by 50%                              |
+|  [ACTION]  Clearing optimizer momentum                     |
+|  [ACTION]  Reducing LR by 50% (persistent)                 |
 |                                                             |
 |  Epoch 5/10  |  Step 451  |  Loss: 0.0021  |  Recovered    |
 +-------------------------------------------------------------+
@@ -195,8 +205,9 @@ Selgis doesn't just prevent errors — it **returns training to a productive tra
 1. **Monitoring** — Track loss at every step in real-time
 2. **Detection** — Identify NaN/Inf and spikes (loss > threshold × average)
 3. **Rollback** — Load last stable state from memory or disk
-4. **Correction** — Reduce LR by 50% to prevent recurrence
-5. **Continue** — Training resumes from safe point automatically
+4. **Reset** — Clear optimizer momentum to prevent drift
+5. **Correction** — Permanently reduce LR by 50% (persists through scheduler)
+6. **Continue** — Training resumes from safe point automatically
 
 ### Configurable Protection
 
@@ -207,6 +218,7 @@ config = SelgisConfig(
     min_history_len=10,          # Steps to average for detection
     final_surge_factor=5.0,      # LR boost when stuck (0 to disable)
     patience=5,                  # Epochs before early stopping
+    primary_metric="accuracy",   # Metric for early stopping
 )
 ```
 
@@ -232,20 +244,23 @@ config = TransformerConfig(
     quantization_type="4bit",
     bnb_4bit_compute_dtype="bfloat16",
     bnb_4bit_use_double_quant=True,
-    
-    # CPU Offload — 40% VRAM savings
+
+    # CPU Offload — 40% VRAM savings (optimizer states)
     cpu_offload=True,
-    
+
+    # Device Map — distribute model across GPU + CPU
+    device_map="auto",
+
     # LoRA — train 0.1% of parameters
     use_peft=True,
     peft_config={"r": 16, "target_modules": ["q_proj", "v_proj"]},
-    
+
     # Gradient Checkpointing — 40% memory savings
     gradient_checkpointing=True,
-    
+
     # Mixed Precision — 50% memory savings
     fp16=True,
-    
+
     # Gradient Accumulation — effective batch size without memory growth
     gradient_accumulation_steps=4,
 )
@@ -310,10 +325,10 @@ config = SelgisConfig(
 ```
 
 **Available schedulers:**
-- `cosine_restart` — SGDR-style with periodic restarts (best for convergence)
+- `cosine_restart` — SGDR-style with periodic restarts (best for convergence, works in epoch and step modes)
 - `cosine` — Smooth cosine annealing
-- `linear` — Linear decay
-- `polynomial` — Power-law decay
+- `linear` — Linear decay (clamped to min_lr)
+- `polynomial` — Power-law decay (clamped to min_lr)
 - `constant` — Fixed learning rate
 
 ---
@@ -331,6 +346,8 @@ config = SelgisConfig(
     lr_finder_trainable_only=True,  # Save memory for LoRA
 )
 ```
+
+**Note:** `lr_finder_enabled` defaults to `False`. Set to `True` when you want auto-tuned LR. The finder now supports mixed precision via `amp_dtype` when used directly.
 
 **Benefit:** Finds optimal LR in 100 steps — saves hours of manual tuning.
 
@@ -401,7 +418,7 @@ trainer = Trainer(model=model, config=config, callbacks=callbacks)
 **Available callbacks:**
 - `LoggingCallback` — Console progress logging
 - `EarlyStoppingCallback` — Stop on plateau
-- `CheckpointCallback` — Save checkpoints
+- `CheckpointCallback` — Save checkpoints (with scheduler state)
 - `HistoryCallback` — Save training history to JSON
 - `WandBCallback` — Weights & Biases integration
 - `SparsityCallback` — Magnitude pruning during training
@@ -488,6 +505,8 @@ config = SelgisConfig(
 )
 ```
 
+**Checkpoint contents:** `model.pt`, `optimizer.pt`, `scheduler.pt`, `metrics.json`
+
 **Benefit:** Never run out of disk space from accumulated checkpoints.
 
 ---
@@ -551,12 +570,15 @@ config = TransformerConfig(
     model_name_or_path="Qwen/Qwen-2.5-3B",
     quantization_type="4bit",
     use_peft=True,
+    peft_config={"r": 16, "lora_alpha": 32, "target_modules": ["q_proj", "v_proj"]},
     cpu_offload=True,
+    device_map="auto",
     nan_recovery=True,
-    final_surge_factor=5.0,      # Last chance for model
+    final_surge_factor=5.0,
     state_storage="disk",
-    save_total_limit=3,          # Cleanup old checkpoints
-    gradient_checkpointing=True, # Memory efficiency
+    save_total_limit=3,
+    gradient_checkpointing=True,
+    trust_remote_code=False,
 )
 ```
 
@@ -576,7 +598,7 @@ trainer = Trainer(
     model=model,
     config=config,
     train_dataloader=loader,
-    compute_metrics=compute_metrics,  # Custom metrics
+    compute_metrics=compute_metrics,
 )
 ```
 
@@ -590,17 +612,17 @@ from selgis import Trainer
 def forward_fn(model, batch):
     inputs = batch["input_ids"]
     labels = batch["labels"]
-    
+
     outputs = model(inputs)
     loss = nn.CrossEntropyLoss()(outputs, labels)
-    
+
     return loss, outputs
 
 trainer = Trainer(
     model=model,
     config=config,
     train_dataloader=loader,
-    forward_fn=forward_fn,  # Custom forward
+    forward_fn=forward_fn,
 )
 ```
 
@@ -645,7 +667,7 @@ $ selgis train --config lora_config.yaml
 
 # Library version
 $ selgis version
-Selgis ML v0.2.2
+Selgis ML v0.2.3
 ```
 
 ---
@@ -686,14 +708,15 @@ Selgis works out of the box — no hours of hyperparameter tuning needed.
 
 | Parameter | Selgis Default | HF Trainer Default | Advantage |
 |-----------|----------------|-------------------|-----------|
-| `lr_finder_enabled` | `True` | N/A | Auto-tuned LR |
+| `lr_finder_enabled` | `False` | N/A | Opt-in auto-LR |
 | `nan_recovery` | `True` | N/A | Auto-protection |
 | `save_best_only` | `True` | `False` | Disk savings |
 | `grad_clip_norm` | `1.0` | `None` | Stability |
 | `scheduler_type` | `cosine_restart` | `linear` | Better convergence |
-| `cpu_offload` | `auto` | `False` | VRAM savings |
+| `cpu_offload` | `False` | `False` | Opt-in VRAM savings |
 | `spike_threshold` | `3.0` | N/A | Spike detection |
 | `final_surge_factor` | `5.0` | N/A | Plateau escape |
+| `deterministic seed` | `True` | `False` | Full reproducibility |
 
 ---
 
@@ -751,3 +774,27 @@ Selgis stands on the shoulders of giants:
 If you find this project useful, consider starring it on GitHub!
 
 </div>
+```
+
+---
+
+## Сводка всех изменений в документации
+
+| # | Что обновлено | Где |
+|---|---|---|
+| 1 | `lr_finder_enabled` дефолт `True` → `False` | API doc + README таблица |
+| 2 | Новое поле `learning_rate` в `SelgisConfig` | API doc таблица |
+| 3 | Новое поле `primary_metric` в `SelgisConfig` | API doc таблица + README примеры |
+| 4 | Новое поле `trust_remote_code` в `TransformerConfig` | API doc таблица + README Security |
+| 5 | Новое поле `device_map` в `TransformerConfig` | API doc + README примеры |
+| 6 | Секция `cpu_offload` vs `device_map` | API doc новая секция |
+| 7 | Валидации `peft_config`, `quantization+cpu`, `grad_accum` | API doc Common Exceptions |
+| 8 | `seed_everything(deterministic=)` | API doc Utilities |
+| 9 | `LRFinder(amp_dtype=)` | API doc Advanced |
+| 10 | `SmartScheduler.state_dict()` расширенный | API doc Advanced |
+| 11 | Persistent `reduce_lr`/`surge_lr` | API doc + README Self-Healing |
+| 12 | Optimizer state clear on rollback | API doc + README Recovery |
+| 13 | `scheduler.pt` в чекпоинтах | API doc + README |
+| 14 | Breaking Changes v0.2.3 | API doc новая секция |
+| 15 | Версия `0.2.3` | Оба документа |
+| 16 | `peft_config` обязателен в README примерах | README все примеры TransformerConfig |

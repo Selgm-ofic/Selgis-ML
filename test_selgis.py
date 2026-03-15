@@ -146,7 +146,15 @@ def test_config():
             model_name_or_path="test-model",
             use_peft=True,
             quantization_type="4bit",
+            peft_config={
+                "r":16,
+                "lora_alpha": 32,
+                "lora_dropout": 0.05
+            },
+            device="cuda",
         )
+        
+        
         print_success(f"TransformerConfig: model={tf_config.model_name_or_path}, peft={tf_config.use_peft}")
 
         # DatasetConfig
