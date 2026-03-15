@@ -2,7 +2,7 @@
 
 ## Обновлённая документация API
 
-```markdown
+
 # Selgis ML Library - Complete API Documentation
 
 **Version:** 0.2.3
