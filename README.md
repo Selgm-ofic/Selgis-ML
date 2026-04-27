@@ -5,8 +5,8 @@
 **Selgis** (Self-Guided Intelligent Stability) is a training framework with automatic failure protection.
 
 [![PyPI version](https://img.shields.io/pypi/v/selgis)](https://pypi.org/project/selgis/)
-[![Python](https://img.shields.io/python-versions/selgis)](https://pypi.org/project/selgis/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
+[![Python](https://img.shields.io/python-versions/selgis)](https://pypi.org/project/selgis/)
 
 ---
 
