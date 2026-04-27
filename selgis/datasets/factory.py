@@ -1,9 +1,11 @@
 """
-Фабрика для создания датасетов и DataLoader.
+Factory for creating datasets and DataLoader.
 
-Единая точка входа для создания датасетов всех типов.
+Single entry point for creating datasets of all types.
 """
+
 from __future__ import annotations
+import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from pathlib import Path
 
@@ -21,26 +23,29 @@ from selgis.datasets.config import DatasetConfig
 from selgis.datasets.base import BaseDataset, StreamingDataset
 from selgis.utils import seed_everything
 
+logger = logging.getLogger(__name__)
+
 
 # =============================================================================
-# Фабрика датасетов
+# Dataset Factory
 # =============================================================================
+
 
 def create_dataset(config: DatasetConfig) -> BaseDataset:
     """
-    Создать датасет на основе конфигурации.
-    
+    Create a dataset based on configuration.
+
     Args:
-        config: Конфигурация датасета
-    
+        config: Dataset configuration
+
     Returns:
-        Dataset объект
-    
+        Dataset object
+
     Raises:
-        ValueError: Если тип данных не поддерживается или конфигурация некорректна
-        ImportError: Если требуются дополнительные зависимости
-    
-    Пример использования:
+        ValueError: If data type is not supported or configuration is invalid
+        ImportError: If additional dependencies are required
+
+    Example usage:
         config = DatasetConfig(
             data_type="text",
             data_path="./data.jsonl",
@@ -50,47 +55,43 @@ def create_dataset(config: DatasetConfig) -> BaseDataset:
         dataset = create_dataset(config)
     """
     data_type = config.data_type
-    
+
     if data_type == "text":
         return _create_text_dataset(config)
-    
+
     elif data_type == "image":
         return _create_image_dataset(config)
-    
+
     elif data_type == "multimodal":
         return _create_multimodal_dataset(config)
-    
+
     elif data_type == "streaming":
         return _create_streaming_dataset(config)
-    
+
     elif data_type == "custom":
         return _create_custom_dataset(config)
-    
+
     else:
         raise ValueError(
-            f"Неподдерживаемый тип данных: {data_type}. "
-            f"Доступные: text, image, multimodal, streaming, custom"
+            f"Unsupported data type: {data_type}. "
+            f"Available: text, image, multimodal, streaming, custom"
         )
 
 
 def _create_text_dataset(config: DatasetConfig):
-    """Создать текстовый датасет."""
+    """Create a text dataset."""
     from selgis.datasets.text import TextDataset, HFTextDataset
-    
+
     data_path = config.data_path or config.train_path
-    
+
     if data_path is None:
-        raise ValueError("Для text датасета требуется data_path или train_path")
-    
-    # Проверка — это HF dataset или локальный файл
+        raise ValueError("Text dataset requires data_path or train_path")
+
+    # Check if this is HF dataset or local file
     data_path_str = str(data_path)
     path_obj = Path(data_path_str)
-    if (
-        "/" in data_path_str
-        and not path_obj.exists()
-        and path_obj.suffix == ""
-    ):
-        # Это HF dataset name (например, "tatsu-lab/alpaca")
+    if "/" in data_path_str and not path_obj.exists() and path_obj.suffix == "":
+        # This is HF dataset name (e.g., "tatsu-lab/alpaca")
         return HFTextDataset(
             dataset_name=str(data_path),
             tokenizer=config.tokenizer,
@@ -100,8 +101,8 @@ def _create_text_dataset(config: DatasetConfig):
             text_column=config.text_column or "text",
             format_fn=config.format_fn,
         )
-    
-    # Локальный файл
+
+    # Local file
     return TextDataset(
         data_path=data_path,
         tokenizer=config.tokenizer,
@@ -116,14 +117,14 @@ def _create_text_dataset(config: DatasetConfig):
 
 
 def _create_image_dataset(config: DatasetConfig):
-    """Создать датасет изображений."""
+    """Create an image dataset."""
     from selgis.datasets.image import ImageDataset
-    
+
     data_path = config.data_path or config.train_path
-    
+
     if data_path is None:
-        raise ValueError("Для image датасета требуется data_path или train_path")
-    
+        raise ValueError("Image dataset requires data_path or train_path")
+
     return ImageDataset(
         data_path=data_path,
         labels_path=config.custom_kwargs.get("labels_path"),
@@ -137,14 +138,14 @@ def _create_image_dataset(config: DatasetConfig):
 
 
 def _create_multimodal_dataset(config: DatasetConfig):
-    """Создать мультимодальный датасет."""
+    """Create a multimodal dataset."""
     from selgis.datasets.multimodal import MultimodalDataset
-    
+
     data_path = config.data_path or config.train_path
-    
+
     if data_path is None:
-        raise ValueError("Для multimodal датасета требуется data_path или train_path")
-    
+        raise ValueError("Multimodal dataset requires data_path or train_path")
+
     return MultimodalDataset(
         data_path=data_path,
         tokenizer=config.tokenizer,
@@ -157,17 +158,17 @@ def _create_multimodal_dataset(config: DatasetConfig):
 
 
 def _create_streaming_dataset(config: DatasetConfig):
-    """Создать streaming датасет."""
+    """Create a streaming dataset."""
     from selgis.datasets.streaming import StreamingTextDataset, StreamingCSVDataset
-    
+
     data_path = config.data_path or config.train_path
-    
+
     if data_path is None:
-        raise ValueError("Для streaming датасета требуется data_path или train_path")
-    
-    # Определение формата по расширению
+        raise ValueError("Streaming dataset requires data_path or train_path")
+
+    # Determine format by extension
     suffix = Path(data_path).suffix.lower()
-    
+
     if suffix == ".csv":
         return StreamingCSVDataset(
             data_path=data_path,
@@ -178,7 +179,7 @@ def _create_streaming_dataset(config: DatasetConfig):
             total_lines=config.custom_kwargs.get("total_lines"),
         )
     else:
-        # По умолчанию — JSONL
+        # Default is JSONL
         return StreamingTextDataset(
             data_path=data_path,
             tokenizer=config.tokenizer,
@@ -190,14 +191,14 @@ def _create_streaming_dataset(config: DatasetConfig):
 
 
 def _create_custom_dataset(config: DatasetConfig):
-    """Создать обёртку для кастомного датасета."""
+    """Create a wrapper for custom dataset."""
     from selgis.datasets.custom import CustomDataset
-    
+
     custom_dataset = config.custom_kwargs.get("dataset")
-    
+
     if custom_dataset is None:
-        raise ValueError("Для custom типа нужно передать dataset в custom_kwargs['dataset']")
-    
+        raise ValueError("For custom type, you need to pass dataset in custom_kwargs['dataset']")
+
     return CustomDataset(
         dataset=custom_dataset,
         wrap_key=config.custom_kwargs.get("wrap_key", "inputs"),
@@ -207,22 +208,23 @@ def _create_custom_dataset(config: DatasetConfig):
 
 
 # =============================================================================
-# Фабрика DataLoader
+# DataLoader Factory
 # =============================================================================
+
 
 def create_dataloaders(
     config: DatasetConfig,
 ) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
-    Создать train и eval DataLoader.
-    
+    Create train and eval DataLoader.
+
     Args:
-        config: Конфигурация датасета
-    
+        config: Dataset configuration
+
     Returns:
         (train_loader, eval_loader)
-    
-    Пример использования:
+
+    Example usage:
         config = DatasetConfig(
             data_type="text",
             data_path="./data.jsonl",
@@ -231,16 +233,19 @@ def create_dataloaders(
         )
         train_loader, eval_loader = create_dataloaders(config)
     """
-    # Создание train датасета
+    # Create train dataset
     train_dataset = create_dataset(config)
-    
-    # Валидация
-    print(f"[INFO] Валидация train датасета...")
-    train_dataset.validate()
-    
-    # Разделение на train/eval
+
+    # Validation
+    logger.info("Validating train dataset...")
+    try:
+        train_dataset.validate()
+    except Exception as e:
+        logger.warning(f"Dataset validation failed: {e}")
+
+    # Split into train/eval
     if config.eval_path:
-        # Отдельный eval датасет
+        # Separate eval dataset
         eval_config = DatasetConfig(
             data_type=config.data_type,
             data_path=config.eval_path,
@@ -256,29 +261,36 @@ def create_dataloaders(
             max_length=config.max_length,
         )
         eval_dataset = create_dataset(eval_config)
-        eval_dataset.validate()
-        print(f"[INFO] Валидация eval датасета...")
+        try:
+            eval_dataset.validate()
+        except Exception as e:
+            logger.warning(f"Eval dataset validation failed: {e}")
+        logger.info("Validating eval dataset...")
     else:
-        # Разделение одного датасета
+        # Split single dataset
         if isinstance(train_dataset, IterableDataset):
-            # Streaming датасеты не поддерживают random_split
-            print("[WARN] Streaming датасеты не поддерживают eval_split. Eval loader не создан.")
+            # Streaming datasets do not support random_split
+            logger.warning("Streaming datasets do not support eval_split. Eval loader not created.")
             eval_dataset = None
         else:
             train_size = int(config.train_split * len(train_dataset))
             eval_size = len(train_dataset) - train_size
-            
+
             if eval_size > 0:
                 train_dataset, eval_dataset = random_split(
                     train_dataset,
                     [train_size, eval_size],
                     generator=torch.Generator().manual_seed(config.seed),
                 )
-                print(f"[INFO] Разделение: train={train_size}, eval={eval_size}")
+                logger.info(
+                    "Dataset split: train=%d, eval=%d",
+                    train_size,
+                    eval_size,
+                )
             else:
                 eval_dataset = None
-    
-    # Создание DataLoader
+
+    # Create DataLoader
     train_loader = _create_dataloader(
         train_dataset,
         batch_size=config.batch_size,
@@ -291,7 +303,7 @@ def create_dataloaders(
         rank=config.rank,
         persistent_workers=config.persistent_workers,
     )
-    
+
     if eval_dataset is not None:
         eval_loader = _create_dataloader(
             eval_dataset,
@@ -307,7 +319,7 @@ def create_dataloaders(
         )
     else:
         eval_loader = None
-    
+
     return train_loader, eval_loader
 
 
@@ -324,43 +336,42 @@ def _create_dataloader(
     persistent_workers: bool = False,
 ) -> DataLoader:
     """
-    Создать DataLoader с правильными настройками для воспроизводимости и DDP.
-    
+    Create DataLoader with proper settings for reproducibility and DDP.
+
     Args:
-        dataset: Dataset для загрузки
-        batch_size: Размер батча
-        num_workers: Количество worker'ов
-        prefetch_factor: Количество батчей для prefetch
-        pin_memory: Использовать pinned memory
-        shuffle: Перемешивать ли данные
-        seed: Random seed для воспроизводимости
-        world_size: Количество GPU (для DDP)
-        rank: Rank текущего процесса (для DDP)
-        persistent_workers: Не перезапускать workers между эпохами
-    
+        dataset: Dataset to load
+        batch_size: Batch size
+        num_workers: Number of workers
+        prefetch_factor: Number of batches to prefetch
+        pin_memory: Use pinned memory
+        shuffle: Whether to shuffle data
+        seed: Random seed for reproducibility
+        world_size: Number of GPUs (for DDP)
+        rank: Rank of current process (for DDP)
+        persistent_workers: Do not restart workers between epochs
+
     Returns:
         DataLoader
     """
     from torch.utils.data import IterableDataset
-    
-    # Проверка на streaming датасет
+
+    # Check for streaming dataset
     is_streaming = isinstance(dataset, IterableDataset)
-    
+
     if is_streaming and shuffle:
-        print("[WARN] IterableDataset не поддерживает shuffle. Отключаю.")
+        logger.warning("IterableDataset does not support shuffle. Disabling.")
         shuffle = False
-    
+
     def _resolve_collate_fn(ds: Dataset):
-        if hasattr(ds, "collate_fn"):
-            return getattr(ds, "collate_fn")
         if isinstance(ds, Subset):
             return _resolve_collate_fn(ds.dataset)
-        return None
+        fn = getattr(ds, "collate_fn", None)
+        return fn if callable(fn) else None
 
-    # Collate функция
+    # Collate function
     collate_fn = _resolve_collate_fn(dataset)
-    
-    # Sampler для DDP
+
+    # Sampler for DDP
     sampler = None
     if world_size > 1 and not is_streaming:
         sampler = DistributedSampler(
@@ -370,18 +381,21 @@ def _create_dataloader(
             shuffle=shuffle,
             seed=seed,
         )
-        shuffle = False  # Sampler уже перемешивает
-    
-    # Worker init function для seed
-    def worker_init_fn(worker_id: int) -> None:
-        # Seed для каждого воркера
-        worker_seed = seed + worker_id
-        seed_everything(worker_seed)
-    
-    # Настройка prefetch_factor
+        shuffle = False  # Sampler already shuffles
+
+    # Worker init function for seed (created only if needed)
+    worker_init_fn = None
+    if num_workers > 0:
+        def worker_init_fn(worker_id: int) -> None:
+            # Seed for each worker
+            worker_seed = seed + worker_id
+            seed_everything(worker_seed)
+
+    # Configure prefetch_factor
     if num_workers == 0:
         prefetch_factor = None
-    
+    effective_pin_memory = pin_memory and torch.cuda.is_available()
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -389,34 +403,35 @@ def _create_dataloader(
         sampler=sampler,
         num_workers=num_workers,
         prefetch_factor=prefetch_factor if num_workers > 0 else None,
-        pin_memory=pin_memory,
+        pin_memory=effective_pin_memory,
         collate_fn=collate_fn,
         worker_init_fn=worker_init_fn,
-        generator=torch.Generator().manual_seed(seed),
+        generator=torch.Generator().manual_seed(seed) if not is_streaming else None,
         persistent_workers=persistent_workers and num_workers > 0,
         drop_last=False,
     )
 
 
 # =============================================================================
-# Интеграция с Trainer
+# Trainer Integration
 # =============================================================================
+
 
 def prepare_data_for_trainer(
     trainer: Any,
     config: DatasetConfig,
 ) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
-    Подготовить данные для Trainer.
-    
+    Prepare data for Trainer.
+
     Args:
-        trainer: Trainer или TransformerTrainer
-        config: Конфигурация датасета
-    
+        trainer: Trainer or TransformerTrainer
+        config: Dataset configuration
+
     Returns:
         (train_loader, eval_loader)
-    
-    Пример использования:
+
+    Example usage:
         config = DatasetConfig(
             data_type="text",
             data_path="./data.jsonl",
@@ -424,20 +439,20 @@ def prepare_data_for_trainer(
             batch_size=32,
         )
         train_loader, eval_loader = prepare_data_for_trainer(trainer, config)
-        
+
         trainer.train_dataloader = train_loader
         trainer.eval_dataloader = eval_loader
     """
     train_loader, eval_loader = create_dataloaders(config)
-    
-    # Проверка совместимости с тренером
-    if hasattr(trainer, 'eval_dataloader') and eval_loader is None:
-        print("[WARN] Eval DataLoader не создан. Обучение без валидации.")
-    
-    # Вывод статистики
+
+    # Check compatibility with trainer
+    if hasattr(trainer, "eval_dataloader") and eval_loader is None:
+        logger.warning("Eval DataLoader not created. Training without validation.")
+
+    # Output statistics
     train_dataset = train_loader.dataset
-    if hasattr(train_dataset, 'get_stats'):
+    if hasattr(train_dataset, "get_stats"):
         stats = train_dataset.get_stats()
-        print(f"[INFO] Статистика датасета: {stats}")
-    
+        logger.info("Dataset statistics: %s", stats)
+
     return train_loader, eval_loader

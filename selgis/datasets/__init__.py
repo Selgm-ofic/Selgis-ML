@@ -1,17 +1,17 @@
 """
-selgis/datasets — Универсальная фабрика загрузчиков данных.
+selgis/datasets — Universal data loader factory.
 
-Поддерживает:
-- Текст (JSONL, TXT, CSV, HuggingFace datasets)
-- Изображения (папки, CSV, WebDataset)
-- Мультимодальные данные (текст + изображения)
-- Кастомные датасеты пользователя
-- Streaming для больших данных (>100GB)
+Supports:
+- Text (JSONL, TXT, CSV, HuggingFace datasets)
+- Images (folders, CSV, WebDataset)
+- Multimodal data (text + images)
+- Custom user datasets
+- Streaming for large data (>100GB)
 
-Архитектура:
-- BaseDataset — единый интерфейс для всех датасетов
-- Конкретные реализации под каждый тип данных
-- Фабрика для создания через конфигурацию
+Architecture:
+- BaseDataset — unified interface for all datasets
+- Specific implementations for each data type
+- Factory for creation via configuration
 """
 
 from selgis.datasets.base import BaseDataset, StreamingDataset
@@ -24,30 +24,30 @@ from selgis.datasets.custom import CustomDataset
 from selgis.datasets.factory import create_dataset, create_dataloaders, prepare_data_for_trainer
 
 __all__ = [
-    # Базовые классы
+    # Base classes
     "BaseDataset",
     "StreamingDataset",
     
-    # Конфигурация
+    # Configuration
     "DatasetConfig",
     
-    # Текстовые датасеты
+    # Text datasets
     "TextDataset",
     "HFTextDataset",
     
-    # Датасеты изображений
+    # Image datasets
     "ImageDataset",
     
-    # Мультимодальные датасеты
+    # Multimodal datasets
     "MultimodalDataset",
     
-    # Streaming датасеты
+    # Streaming datasets
     "StreamingTextDataset",
     
-    # Кастомные датасеты
+    # Custom datasets
     "CustomDataset",
     
-    # Фабрика
+    # Factory
     "create_dataset",
     "create_dataloaders",
     "prepare_data_for_trainer",

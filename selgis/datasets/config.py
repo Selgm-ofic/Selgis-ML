@@ -1,92 +1,95 @@
 """
-Конфигурация и схемы данных для датасетов Selgis.
+Configuration and data schemas for Selgis datasets.
 
-TypedDict для валидации выходных данных и DatasetConfig для фабрики.
+TypedDict for output data validation and DatasetConfig for factory.
 """
+
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Literal, TypedDict
+from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict, Union
 from pathlib import Path
-import torch
 
 
 # =============================================================================
-# Схемы данных (TypedDict для валидации)
+# Data Schemas (TypedDict for validation)
 # =============================================================================
+
 
 class TextSample(TypedDict, total=False):
     """
-    Схема для текстовых данных (LLM, NLP).
-    
-    Пример:
+    Schema for text data (LLM, NLP).
+
+    Example:
         {
-            "input_ids": tensor([1, 2, 3, ...]),        # (seq_len,)
-            "attention_mask": tensor([1, 1, 1, ...]),   # (seq_len,)
-            "labels": tensor([1, 2, 3, ...]),           # (seq_len,)
+            "input_ids": list[int],        # (seq_len,)
+            "attention_mask": list[int],   # (seq_len,)
+            "labels": list[int],           # (seq_len,)
         }
     """
-    input_ids: torch.Tensor
-    attention_mask: torch.Tensor
-    labels: torch.Tensor
+
+    input_ids: list[int]
+    attention_mask: list[int]
+    labels: list[int]
     text: str
 
 
 class ImageSample(TypedDict, total=False):
     """
-    Схема для изображений.
-    
-    Пример:
+    Schema for images.
+
+    Example:
         {
-            "inputs": tensor(C, H, W),          # Изображение
-            "labels": tensor(class_id),         # Класс
-            "image_path": str,                  # Путь к файлу
+            "inputs": list[float],          # Image
+            "labels": int,                 # Class
+            "image_path": str,              # File path
         }
     """
-    inputs: torch.Tensor
-    labels: torch.Tensor
+
+    inputs: list[float]
+    labels: int
     image_path: str
-    pixel_values: torch.Tensor
+    pixel_values: list[float]
 
 
 class MultimodalSample(TypedDict, total=False):
     """
-    Схема для мультимодальных данных (текст + изображения).
-    
-    Пример:
+    Schema for multimodal data (text + images).
+
+    Example:
         {
             "inputs": {
-                "pixel_values": tensor(C, H, W),
-                "input_ids": tensor(seq_len,),
-                "attention_mask": tensor(seq_len,),
+                "pixel_values": list[float],
+                "input_ids": list[int],
+                "attention_mask": list[int],
             },
             "labels": str,
-            "metadata": {...},
+            "metadata": dict,
         }
     """
-    inputs: Dict[str, Any]
-    labels: Union[torch.Tensor, str]
-    metadata: Dict[str, Any]
+
+    inputs: dict
+    labels: Union[str, int]
+    metadata: dict
 
 
 class TabularSample(TypedDict, total=False):
     """
-    Схема для табличных данных.
-    
-    Пример:
+    Schema for tabular data.
+
+    Example:
         {
-            "inputs": {
-                "feature1": tensor(...),
-                "feature2": tensor(...),
-            },
-            "labels": tensor(target),
+            "inputs": dict[str, list[float]],
+            "labels": list[float],
+            "row_id": int,
         }
     """
-    inputs: Dict[str, torch.Tensor]
-    labels: torch.Tensor
+
+    inputs: dict[str, list[float]]
+    labels: list[float]
     row_id: int
 
 
-# Реестр схем по типам данных
+# Schema registry by data types
 SCHEMA_REGISTRY: Dict[str, type[TypedDict]] = {
     "text": TextSample,
     "image": ImageSample,
@@ -96,17 +99,18 @@ SCHEMA_REGISTRY: Dict[str, type[TypedDict]] = {
 
 
 # =============================================================================
-# Конфигурация датасета
+# Dataset Configuration
 # =============================================================================
+
 
 @dataclass
 class DatasetConfig:
     """
-    Конфигурация для создания датасета.
-    
-    Сериализуется в YAML/JSON для удобства.
-    
-    Пример использования:
+    Configuration for creating dataset.
+
+    Serializable to YAML/JSON for convenience.
+
+    Example usage:
         config = DatasetConfig(
             data_type="text",
             data_path="./data.jsonl",
@@ -115,108 +119,108 @@ class DatasetConfig:
             max_length=512,
         )
         dataset = create_dataset(config)
-    
+
     Attributes:
-        data_type: Тип данных ("text", "image", "multimodal", "custom", "streaming", "tabular")
-        data_path: Путь к основному файлу/папке данных
-        train_path: Путь к train датасету (если отдельно от eval)
-        eval_path: Путь к eval датасету (если отдельно от train)
-        
-        # Для мультимодальных/табличных данных
-        image_path: Путь к папке с изображениями
-        image_column: Название колонки с изображениями
-        text_column: Название колонки с текстом
-        label_column: Название колонки с метками
-        
-        # Параметры загрузки
-        batch_size: Размер батча для train
-        eval_batch_size: Размер батча для eval
-        num_workers: Количество worker'ов для DataLoader
-        prefetch_factor: Количество батчей для prefetch
-        pin_memory: Использовать pinned memory
-        persistent_workers: Не перезапускать workers между эпохами
-        
-        # Токенизация / трансформы
-        tokenizer: HuggingFace tokenizer (для текста)
-        image_processor: HuggingFace image processor (для изображений)
-        transform: Torchvision трансформы (для изображений)
-        format_fn: Кастомная функция форматирования данных
-        
-        # Кэширование и препроцессинг
-        cache_dir: Директория для кэша (токены, изображения)
-        use_cache: Использовать ли кэширование
-        pre_tokenize: Pre-токенизировать текст при первом запуске
-        pre_compute_features: Pre-вычислить фичи для изображений
-        
-        # Streaming для больших данных
-        streaming: Использовать streaming режим
-        buffer_size: Размер буфера для streaming
-        
-        # Разделение данных
-        train_split: Доля train данных (если нет eval_path)
-        seed: Random seed для воспроизводимости
-        
+        data_type: Data type ("text", "image", "multimodal", "custom", "streaming", "tabular")
+        data_path: Path to main data file/folder
+        train_path: Path to train dataset (if separate from eval)
+        eval_path: Path to eval dataset (if separate from train)
+
+        # For multimodal/tabular data
+        image_path: Path to images folder
+        image_column: Name of image column
+        text_column: Name of text column
+        label_column: Name of label column
+
+        # Loading parameters
+        batch_size: Batch size for train
+        eval_batch_size: Batch size for eval
+        num_workers: Number of workers for DataLoader
+        prefetch_factor: Number of batches to prefetch
+        pin_memory: Use pinned memory
+        persistent_workers: Do not restart workers between epochs
+
+        # Tokenization / transforms
+        tokenizer: HuggingFace tokenizer (for text)
+        image_processor: HuggingFace image processor (for images)
+        transform: Torchvision transforms (for images)
+        format_fn: Custom data formatting function
+
+        # Caching and preprocessing
+        cache_dir: Directory for cache (tokens, images)
+        use_cache: Whether to use caching
+        pre_tokenize: Pre-tokenize text on first run
+        pre_compute_features: Pre-compute features for images
+
+        # Streaming for large data
+        streaming: Use streaming mode
+        buffer_size: Buffer size for streaming
+
+        # Data splitting
+        train_split: Fraction of train data (if no eval_path)
+        seed: Random seed for reproducibility
+
         # Distributed training
-        world_size: Количество GPU (для DDP)
-        rank: Rank текущего процесса (для DDP)
-        
-        # Кастомные параметры
-        custom_kwargs: Дополнительные параметры для конкретных датасетов
+        world_size: Number of GPUs (for DDP)
+        rank: Rank of current process (for DDP)
+
+        # Custom parameters
+        custom_kwargs: Additional parameters for specific datasets
     """
-    
-    # Тип данных
+
+    # Data type
     data_type: Literal["text", "image", "multimodal", "custom", "streaming", "tabular"] = "text"
-    
-    # Пути к данным
+
+    # Data paths
     data_path: Optional[Union[str, Path]] = None
     train_path: Optional[Union[str, Path]] = None
     eval_path: Optional[Union[str, Path]] = None
-    
-    # Для мультимодальных/табличных данных
+
+    # For multimodal/tabular data
     image_path: Optional[Union[str, Path]] = None
     image_column: Optional[str] = None
     text_column: Optional[str] = None
     label_column: Optional[str] = None
-    
-    # Параметры загрузки
+
+    # Loading parameters
     batch_size: int = 32
     eval_batch_size: int = 64
     num_workers: int = 0
     prefetch_factor: Optional[int] = None
     pin_memory: bool = True
     persistent_workers: bool = False
-    
-    # Токенизация / трансформы
+
+    # Tokenization / transforms
     tokenizer: Any = None
     image_processor: Any = None
     transform: Any = None
     format_fn: Optional[Callable] = None
-    
-    # Кэширование и препроцессинг
+
+    # Caching and preprocessing
     cache_dir: Optional[Union[str, Path]] = None
     use_cache: bool = True
     pre_tokenize: bool = False
     pre_compute_features: bool = False
-    
-    # Streaming для больших данных
+
+    # Streaming for large data
     streaming: bool = False
     buffer_size: int = 1000
-    
-    # Разделение данных
+
+    # Data splitting
     train_split: float = 0.9
     seed: int = 42
-    
+
     # Distributed training
     world_size: int = 1
     rank: int = 0
-    
-    # Дополнительные параметры
+
+    # Additional parameters
     max_length: int = 512
     custom_kwargs: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
-        """Валидация конфигурации после инициализации."""
-        # Преобразование путей
+        """Validate configuration after initialization."""
+        # Convert paths
         if self.data_path and isinstance(self.data_path, str):
             self.data_path = Path(self.data_path)
         if self.train_path and isinstance(self.train_path, str):
@@ -227,35 +231,35 @@ class DatasetConfig:
             self.image_path = Path(self.image_path)
         if self.cache_dir and isinstance(self.cache_dir, str):
             self.cache_dir = Path(self.cache_dir)
-        
-        # Валидация train_split
+
+        # Validate train_split
         if not 0.0 < self.train_split <= 1.0:
-            raise ValueError(f"train_split должен быть в (0, 1], получил {self.train_split}")
-        
-        # Валидация streaming
+            raise ValueError(f"train_split must be in (0, 1], got {self.train_split}")
+
+        # Validate streaming
         if self.streaming and self.data_type != "streaming":
-            # Автоматически переключаем на streaming для больших файлов
+            # Automatically switch to streaming for large files
             if self.data_path and isinstance(self.data_path, Path):
                 if self.data_path.exists() and self.data_path.stat().st_size > 10 * 1024**3:  # 10GB
-                    print(f"[WARN] Файл > 10GB, рекомендуется streaming=True")
-        
-        # Проверка conflicting параметров
+                    print(f"[WARN] File > 10GB, streaming=True recommended")
+
+        # Check conflicting parameters
         if self.pre_tokenize and self.streaming:
-            print("[WARN] pre_tokenize игнорируется в streaming режиме")
+            print("[WARN] pre_tokenize ignored in streaming mode")
             self.pre_tokenize = False
-        
-        # Установка prefetch_factor по умолчанию
+
+        # Set default prefetch_factor
         if self.prefetch_factor is None and self.num_workers > 0:
             self.prefetch_factor = 2
-    
+
     def to_dict(self) -> Dict[str, Any]:
-        """Сериализация в dict (для JSON/YAML)."""
+        """Serialize to dict (for JSON/YAML)."""
         import json
         from dataclasses import asdict
-        
-        # Исключаем не-сериализуемые поля
+
+        # Exclude non-serializable fields
         exclude = {"tokenizer", "image_processor", "transform", "format_fn"}
-        
+
         result = {}
         for key, value in asdict(self).items():
             if key in exclude:
@@ -264,38 +268,38 @@ class DatasetConfig:
                 result[key] = str(value)
             else:
                 result[key] = value
-        
+
         return result
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> DatasetConfig:
-        """Десериализация из dict."""
-        # Конвертируем пути обратно в Path
+        """Deserialize from dict."""
+        # Convert paths back to Path
         for key in ["data_path", "train_path", "eval_path", "image_path", "cache_dir"]:
             if key in data and data[key] is not None:
                 data[key] = Path(data[key])
-        
+
         return cls(**data)
-    
+
     def save(self, path: Union[str, Path]) -> None:
-        """Сохранить конфигурацию в JSON файл."""
+        """Save configuration to JSON file."""
         import json
-        
+
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(path, 'w', encoding='utf-8') as f:
+
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
-        
-        print(f"[SAVE] Конфигурация сохранена: {path}")
-    
+
+        print(f"[SAVE] Configuration saved: {path}")
+
     @classmethod
     def load(cls, path: Union[str, Path]) -> DatasetConfig:
-        """Загрузить конфигурацию из JSON файла."""
+        """Load configuration from JSON file."""
         import json
-        
+
         path = Path(path)
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        
+
         return cls.from_dict(data)

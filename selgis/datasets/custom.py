@@ -1,8 +1,8 @@
 """
-Обёртка для кастомных датасетов пользователя.
+Wrapper for custom user datasets.
 
-Позволяет использовать любые пользовательские Dataset с Selgis,
-автоматически приводя их к единому интерфейсу.
+Allows using any custom Dataset with Selgis,
+automatically adapting them to a unified interface.
 """
 from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
@@ -15,14 +15,14 @@ from selgis.datasets.base import BaseDataset
 
 class CustomDataset(BaseDataset):
     """
-    Обёртка для кастомных датасетов пользователя.
+    Wrapper for custom user datasets.
     
-    Автоматически оборачивает любой PyTorch Dataset в интерфейс Selgis:
-    - __getitem__ должен возвращать dict или будет обёрнут
-    - Поддерживает кастомные collate функции
+    Automatically wraps any PyTorch Dataset in Selgis interface:
+    - __getitem__ should return dict or will be wrapped
+    - Supports custom collate functions
     
-    Пример использования:
-        # Пользовательский датасет
+    Example usage:
+        # Custom dataset
         class MyDataset(Dataset):
             def __init__(self):
                 self.data = [...]
@@ -36,15 +36,15 @@ class CustomDataset(BaseDataset):
                     "labels": torch.tensor(...),
                 }
         
-        # Обёртка для Selgis
+        # Wrapper for Selgis
         custom_dataset = CustomDataset(
             dataset=MyDataset(),
         )
         
-        # Или с кастомными ключами
+        # Or with custom keys
         custom_dataset = CustomDataset(
             dataset=MyDataset(),
-            wrap_key="features",  # Если __getitem__ возвращает не dict
+            wrap_key="features",  # If __getitem__ returns non-dict
             label_key="target",
         )
     """
@@ -63,36 +63,36 @@ class CustomDataset(BaseDataset):
         self.label_key = label_key
         self._collate_fn = collate_fn
         
-        # Проверка длины
+        # Check length
         try:
             length = len(dataset)
             if length == 0:
-                print("[WARN] CustomDataset пустой!")
+                print("[WARN] CustomDataset is empty!")
         except (TypeError, AttributeError):
-            print("[WARN] CustomDataset не поддерживает len()")
+            print("[WARN] CustomDataset does not support len()")
     
     def __len__(self) -> int:
         try:
             return len(self.dataset)
         except (TypeError, AttributeError):
-            # Для IterableDataset
+            # For IterableDataset
             return 0
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        """Получить элемент и привести к интерфейсу Selgis."""
+        """Get element and adapt to Selgis interface."""
         item = self.dataset[idx]
         
-        # Если элемент уже dict — возвращаем как есть
+        # If element is already dict - return as is
         if isinstance(item, dict):
             return item
         
-        # Обёртка в dict
+        # Wrap in dict
         return {
             self.wrap_key: item,
         }
     
     def __iter__(self):
-        """Итератор для IterableDataset."""
+        """Iterator for IterableDataset."""
         if hasattr(self.dataset, '__iter__'):
             for item in self.dataset:
                 if isinstance(item, dict):
@@ -100,17 +100,17 @@ class CustomDataset(BaseDataset):
                 else:
                     yield {self.wrap_key: item}
         else:
-            # Fallback для обычных Dataset
+            # Fallback for regular Dataset
             for i in range(len(self)):
                 yield self[i]
     
     @property
     def collate_fn(self) -> Callable | None:
-        """Вернуть collate функцию датасета."""
+        """Return dataset collate function."""
         return self._collate_fn or getattr(self.dataset, 'collate_fn', None)
     
     def get_stats(self) -> Dict[str, Any]:
-        """Статистика датасета."""
+        """Dataset statistics."""
         stats = super().get_stats()
         stats.update({
             "wrapped_dataset_type": self.dataset.__class__.__name__,

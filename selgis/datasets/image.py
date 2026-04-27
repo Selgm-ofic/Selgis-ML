@@ -1,16 +1,16 @@
 """
-Датасеты для изображений.
+Datasets for images.
 
-Поддерживает:
-- Папки с изображениями (по классам)
-- CSV/JSON с путями к изображениям
-- Кастомные трансформы (torchvision)
+Supports:
+- Folders with images (by classes)
+- CSV/JSON with image paths
+- Custom transforms (torchvision)
 - HuggingFace image processors
 
-Оптимизации:
-- Prefetching изображений
-- Кэширование обработанных изображений
-- Поддержка WebDataset для больших архивов
+Optimizations:
+- Image prefetching
+- Caching of processed images
+- WebDataset support for large archives
 """
 from __future__ import annotations
 import json
@@ -28,15 +28,15 @@ from selgis.datasets.config import ImageSample
 
 class ImageDataset(BaseDataset):
     """
-    Датасет для изображений с оптимизированной загрузкой.
+    Dataset for images with optimized loading.
     
-    Особенности:
-    - Поддержка разных форматов (folder, csv, json)
-    - Кастомные трансформы (torchvision)
+    Features:
+    - Support for different formats (folder, csv, json)
+    - Custom transforms (torchvision)
     - HuggingFace image processors
-    - Метрики производительности
+    - Performance metrics
     
-    Пример использования:
+    Example usage:
         from torchvision import transforms
         
         dataset = ImageDataset(
@@ -73,24 +73,24 @@ class ImageDataset(BaseDataset):
         self.image_column = image_column or "image_path"
         self.label_column = label_column or "label"
         
-        # Индекс файлов
+        # File index
         self._samples: List[Tuple[Path, Optional[int]]] = []
         self._class_names: List[str] = []
         
-        # Метрики
+        # Metrics
         self._metrics = {
             "total_samples": 0,
             "load_time_ms": [],
         }
         
-        # Валидация пути
+        # Path validation
         if not self.data_path.exists():
-            raise FileNotFoundError(f"Путь не найден: {self.data_path}")
+            raise FileNotFoundError(f"Path not found: {self.data_path}")
         
         self._build_index()
     
     def _build_index(self) -> None:
-        """Построить индекс изображений."""
+        """Build image index."""
         if self.file_format == "folder":
             self._build_index_folder()
         elif self.file_format == "csv":
@@ -99,7 +99,7 @@ class ImageDataset(BaseDataset):
             self._build_index_json()
     
     def _build_index_folder(self) -> None:
-        """Индекс для папки с классами."""
+        """Index for folder with classes."""
         class_to_idx = {}
         
         for class_dir in sorted(self.data_path.iterdir()):
@@ -110,15 +110,15 @@ class ImageDataset(BaseDataset):
             class_to_idx[class_name] = len(class_to_idx)
             self._class_names.append(class_name)
             
-            # Поиск изображений
+            # Search for images
             for ext in ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.webp']:
                 for img_path in class_dir.glob(ext):
                     self._samples.append((img_path, class_to_idx[class_name]))
         
-        print(f"[INFO] Найдено {len(self._samples)} изображений в {len(class_to_idx)} классах")
+        print(f"[INFO] Found {len(self._samples)} images in {len(class_to_idx)} classes")
     
     def _build_index_csv(self) -> None:
-        """Индекс для CSV файла."""
+        """Index for CSV file."""
         data_file = self.labels_path or self.data_path
         
         with open(data_file, 'r', encoding='utf-8') as f:
@@ -134,7 +134,7 @@ class ImageDataset(BaseDataset):
                     self._samples.append((Path(img_path), label))
     
     def _build_index_json(self) -> None:
-        """Индекс для JSON файла."""
+        """Index for JSON file."""
         data_file = self.labels_path or self.data_path
         
         with open(data_file, 'r', encoding='utf-8') as f:
@@ -153,19 +153,19 @@ class ImageDataset(BaseDataset):
         return len(self._samples)
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        """Получить изображение с метриками производительности."""
+        """Get image with performance metrics."""
         start_time = time.perf_counter()
         
         img_path, label = self._samples[idx]
         
-        # Загрузка изображения
+        # Load image
         try:
             from PIL import Image
             image = Image.open(img_path).convert('RGB')
         except Exception as e:
-            raise RuntimeError(f"Ошибка загрузки изображения {img_path}: {e}")
+            raise RuntimeError(f"Error loading image {img_path}: {e}")
         
-        # Трансформы
+        # Transforms
         if self.image_processor:
             # HuggingFace processor
             image_input = self.image_processor(image, return_tensors="pt")
@@ -177,16 +177,16 @@ class ImageDataset(BaseDataset):
             # Torchvision transforms
             image_input = self.transform(image)
         else:
-            # По умолчанию — конвертация в tensor
+            # Default - convert to tensor
             import numpy as np
             image_input = torch.tensor(np.array(image)).permute(2, 0, 1).float() / 255.0
         
-        # Метрики
+        # Metrics
         elapsed = (time.perf_counter() - start_time) * 1000
         self._metrics["load_time_ms"].append(elapsed)
         self._metrics["total_samples"] += 1
         
-        # Формирование результата
+        # Format result
         result = {
             "inputs": image_input,
             "image_path": str(img_path),
@@ -199,11 +199,11 @@ class ImageDataset(BaseDataset):
     
     @property
     def collate_fn(self) -> Callable | None:
-        """Custom collate для изображений."""
+        """Custom collate for images."""
         return image_collate_fn
     
     def get_stats(self) -> Dict[str, Any]:
-        """Статистика работы датасета."""
+        """Dataset performance statistics."""
         stats = super().get_stats()
         
         load_times = self._metrics["load_time_ms"]
@@ -211,7 +211,7 @@ class ImageDataset(BaseDataset):
             "avg_load_time_ms": sum(load_times) / len(load_times) if load_times else 0,
             "p95_load_time_ms": sorted(load_times)[int(len(load_times) * 0.95)] if len(load_times) > 20 else 0,
             "num_classes": len(self._class_names),
-            "class_names": self._class_names[:10],  # Первые 10 для отладки
+            "class_names": self._class_names[:10],  # First 10 for debugging
         })
         
         return stats
@@ -219,27 +219,27 @@ class ImageDataset(BaseDataset):
 
 def image_collate_fn(batch: List[Dict]) -> Dict[str, Any]:
     """
-    Collate функция для изображений.
+    Collate function for images.
     
-    Stack'ит изображения в батч и собирает метки.
+    Stacks images into batch and collects labels.
     """
     if not batch:
         return {}
     
-    # Stack изображений
+    # Stack images
     images = torch.stack([item["inputs"] for item in batch])
     
     result = {"inputs": images}
     
-    # Сбор меток
+    # Collect labels
     if "labels" in batch[0]:
         labels = [item["labels"] for item in batch]
         
         if labels[0].dim() == 0:
-            # Скалярные метки (классы)
+            # Scalar labels (classes)
             result["labels"] = torch.stack(labels)
         else:
-            # Векторные метки (multi-label)
+            # Vector labels (multi-label)
             result["labels"] = torch.stack(labels)
     
     return result

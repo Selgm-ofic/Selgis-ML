@@ -1,17 +1,17 @@
 """
-Мультимодальные датасеты (текст + изображения).
+Multimodal datasets (text + images).
 
-Поддерживает:
-- LLaVA-style датасеты (вопрос-ответ по изображению)
-- BLIP-style датасеты (подписи к изображениям)
-- Кастомные форматы через format_fn
+Supports:
+- LLaVA-style datasets (question-answer about image)
+- BLIP-style datasets (image captions)
+- Custom formats via format_fn
 
-Пример структуры JSONL:
+Example JSONL structure:
     {
         "image": "path/to/image.jpg",
-        "text": "Описание изображения",
-        "question": "Что на изображении?",
-        "answer": "На изображении..."
+        "text": "Image description",
+        "question": "What is in the image?",
+        "answer": "In the image..."
     }
 """
 from __future__ import annotations
@@ -29,14 +29,14 @@ from selgis.datasets.config import MultimodalSample
 
 class MultimodalDataset(BaseDataset):
     """
-    Датасет для мультимодальных данных (текст + изображения).
+    Dataset for multimodal data (text + images).
     
-    Особенности:
-    - Поддержка LLaVA, BLIP, InstructBLIP форматов
-    - Кастомное форматирование через format_fn
-    - Метрики производительности
+    Features:
+    - Support for LLaVA, BLIP, InstructBLIP formats
+    - Custom formatting via format_fn
+    - Performance metrics
     
-    Пример использования:
+    Example usage:
         from transformers import AutoTokenizer, AutoImageProcessor
         
         tokenizer = AutoTokenizer.from_pretrained("llava-hf/llava-1.5-7b-hf")
@@ -72,10 +72,10 @@ class MultimodalDataset(BaseDataset):
         self.format_fn = format_fn or self._default_format
         self.image_root = Path(image_root) if image_root else None
         
-        # Индекс записей
+        # Record index
         self._records: List[Dict] = []
         
-        # Метрики
+        # Metrics
         self._metrics = {
             "total_samples": 0,
             "load_time_ms": [],
@@ -84,42 +84,42 @@ class MultimodalDataset(BaseDataset):
         }
         
         if not self.data_path.exists():
-            raise FileNotFoundError(f"Файл не найден: {self.data_path}")
+            raise FileNotFoundError(f"File not found: {self.data_path}")
         
         self._load_records()
     
     def _load_records(self) -> None:
-        """Загрузить индекс записей."""
+        """Load record index."""
         with open(self.data_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f):
                 try:
                     record = json.loads(line)
                     self._records.append(record)
                 except json.JSONDecodeError as e:
-                    print(f"[WARN] Пропуск строки {line_num}: {e}")
+                    print(f"[WARN] Skipping line {line_num}: {e}")
         
-        print(f"[INFO] Загружено {len(self._records)} записей")
+        print(f"[INFO] Loaded {len(self._records)} records")
     
     def __len__(self) -> int:
         return len(self._records)
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        """Получить мультимодальный элемент с метриками."""
+        """Get multimodal element with metrics."""
         start_time = time.perf_counter()
         
         record = self._records[idx]
         
-        # Форматирование текста
+        # Text formatting
         text_start = time.perf_counter()
         text_input, text_target = self.format_fn(record)
         text_time = (time.perf_counter() - text_start) * 1000
         
-        # Загрузка изображения
+        # Image loading
         image_start = time.perf_counter()
         image_input = self._load_image(record)
         image_time = (time.perf_counter() - image_start) * 1000
         
-        # Токенизация текста
+        # Text tokenization
         if self.tokenizer:
             text_encoded = self.tokenizer(
                 text_input,
@@ -134,14 +134,14 @@ class MultimodalDataset(BaseDataset):
             text_input_ids = torch.tensor([])
             attention_mask = torch.tensor([])
         
-        # Метрики
+        # Metrics
         elapsed = (time.perf_counter() - start_time) * 1000
         self._metrics["load_time_ms"].append(elapsed)
         self._metrics["image_load_time_ms"].append(image_time)
         self._metrics["text_load_time_ms"].append(text_time)
         self._metrics["total_samples"] += 1
         
-        # Формирование результата
+        # Format result
         return {
             "inputs": {
                 "pixel_values": image_input,
@@ -156,21 +156,21 @@ class MultimodalDataset(BaseDataset):
         }
     
     def _load_image(self, record: Dict) -> torch.Tensor:
-        """Загрузить и обработать изображение."""
+        """Load and process image."""
         from PIL import Image
         
         image_path = record.get("image", "")
         
-        # Добавляем image_root если указан
+        # Add image_root if specified
         if self.image_root and not Path(image_path).is_absolute():
             image_path = self.image_root / image_path
         
         try:
             image = Image.open(image_path).convert('RGB')
         except Exception as e:
-            raise RuntimeError(f"Ошибка загрузки изображения {image_path}: {e}")
+            raise RuntimeError(f"Error loading image {image_path}: {e}")
         
-        # Обработка изображения
+        # Image processing
         if self.image_processor:
             image_input = self.image_processor(image, return_tensors="pt")
             if isinstance(image_input, dict):
@@ -178,14 +178,14 @@ class MultimodalDataset(BaseDataset):
             if isinstance(image_input, torch.Tensor):
                 image_input = image_input.squeeze(0)
         else:
-            # По умолчанию — конвертация в tensor
+            # Default - convert to tensor
             import numpy as np
             image_input = torch.tensor(np.array(image)).permute(2, 0, 1).float() / 255.0
         
         return image_input
     
     def _default_format(self, record: Dict) -> Tuple[str, str]:
-        """Форматирование по умолчанию (LLaVA-style)."""
+        """Default formatting (LLaVA-style)."""
         # LLaVA format: question + answer
         question = record.get("question", "")
         answer = record.get("answer", "")
@@ -196,7 +196,7 @@ class MultimodalDataset(BaseDataset):
         # BLIP format: image captioning
         text = record.get("text", "")
         if text:
-            return f"Опиши изображение:", text
+            return f"Describe the image:", text
         
         # Generic format
         text = record.get("text", "")
@@ -204,11 +204,11 @@ class MultimodalDataset(BaseDataset):
     
     @property
     def collate_fn(self) -> Callable | None:
-        """Custom collate для мультимодальных данных."""
+        """Custom collate for multimodal data."""
         return multimodal_collate_fn
     
     def get_stats(self) -> Dict[str, Any]:
-        """Статистика работы датасета."""
+        """Dataset performance statistics."""
         stats = super().get_stats()
         
         load_times = self._metrics["load_time_ms"]
@@ -227,24 +227,24 @@ class MultimodalDataset(BaseDataset):
 
 def multimodal_collate_fn(batch: List[Dict]) -> Dict[str, Any]:
     """
-    Collate функция для мультимодальных батчей.
+    Collate function for multimodal batches.
     
-    Stack'ит изображения и токены, обрабатывает variable-length sequences.
+    Stacks images and tokens, handles variable-length sequences.
     """
     if not batch:
         return {}
     
-    # Сбор изображений
+    # Collect images
     pixel_values = [item["inputs"]["pixel_values"] for item in batch]
     
-    # Stack изображений (если одинаковый размер)
+    # Stack images (if same size)
     try:
         pixel_values_batched = torch.stack(pixel_values)
     except RuntimeError:
-        # Разные размеры — возвращаем список
+        # Different sizes - return list
         pixel_values_batched = pixel_values
     
-    # Токенизированный текст — padding через rnn
+    # Tokenized text - padding via rnn
     input_ids = torch.nn.utils.rnn.pad_sequence(
         [item["inputs"]["input_ids"] for item in batch],
         batch_first=True,

@@ -1,22 +1,24 @@
 """
-Streaming датасеты для больших файлов (>100GB).
+Streaming datasets for large files (>100GB).
 
-Наследуются от IterableDataset для корректной работы с DataLoader:
-- Поддерживают num_workers > 0
-- Не требуют индексации
-- Данные загружаются потоком
+Inherit from IterableDataset for proper DataLoader integration:
+- Support num_workers > 0
+- No indexing required
+- Data loaded as stream
 
-Оптимизации:
-- Разделение данных между воркерами
-- Буферизация для уменьшения I/O
-- Поддержка сжатых файлов (.gz, .zip)
+Optimizations:
+- Data splitting between workers
+- Buffering to reduce I/O
+- Support for compressed files (.gz, .zip)
 """
+
 from __future__ import annotations
-import json
-import gzip
 import csv
+import gzip
+import json
+from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Deque, Dict, List, Optional, Union
 
 import torch
 from torch.utils.data import IterableDataset
@@ -26,25 +28,32 @@ from selgis.datasets.base import StreamingDataset
 
 class StreamingTextDataset(StreamingDataset):
     """
-    Streaming датасет для больших текстовых файлов.
-    
-    Особенности:
-    - Не загружает весь файл в RAM
-    - Читает по одной строке за раз
-    - Поддерживает разделение между воркерами
-    - Автоматическое закрытие файлов
-    
-    Пример использования:
+    Streaming dataset for large text files.
+
+    Features:
+    - Does not load entire file into RAM
+    - Reads one line at a time
+    - Supports splitting between workers
+    - Automatic file closing
+
+    Important:
+        __iter__ returns self, which means:
+        - NOT thread-safe: do not use one object from multiple threads
+        - DO NOT create multiple iterators from one object in one process
+        - Repeated calls to iter(dataset) will reset the first iterator's state
+        - For parallel processing, use num_workers in DataLoader
+
+    Example usage:
         dataset = StreamingTextDataset(
             data_path="./data/huge_dataset.jsonl",
             tokenizer=tokenizer,
             max_length=512,
             buffer_size=1000,
         )
-        
+
         loader = DataLoader(dataset, batch_size=32, num_workers=4)
     """
-    
+
     def __init__(
         self,
         data_path: Union[str, Path],
@@ -55,129 +64,129 @@ class StreamingTextDataset(StreamingDataset):
         total_lines: Optional[int] = None,
     ) -> None:
         super().__init__()
-        
+
         self.data_path = Path(data_path)
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.buffer_size = buffer_size
         self.format_fn = format_fn
         self._total_lines = total_lines
-        
-        # Состояние для итерации
+
+        # Iteration state
         self._file = None
-        self._buffer: List[str] = []
+        self._buffer: Deque[str] = deque()
         self._line_count = 0
         self._global_line_idx = 0
-        
-        # Для разделения между воркерами
+
+        # For splitting between workers
         self._worker_id = 0
         self._num_workers = 1
-        
+
         if not self.data_path.exists():
-            raise FileNotFoundError(f"Файл не найден: {self.data_path}")
-    
+            raise FileNotFoundError(f"File not found: {self.data_path}")
+
     def __iter__(self):
         """
-        Итератор с поддержкой multi-processing.
-        
-        Каждый воркер получает свою часть данных.
+        Iterator with multi-processing support.
+
+        Each worker gets its own portion of data.
         """
-        # Получаем информацию о воркере
+        # Get worker information
         worker_info = torch.utils.data.get_worker_info()
-        
-        # Сброс состояния
-        self._buffer = []
+
+        # Reset state
+        self._buffer = deque()
         self._line_count = 0
-        
-        # Открываем новый файл для каждого воркера
-        if self._file is not None:
-            try:
-                self._file.close()
-            except Exception:
-                pass
-        
-        # Информация о воркере
+
+        # Open new file for each worker - close old one if exists
+        self._close_file()
+
+        # Worker information
         if worker_info is None:
             self._worker_id = 0
             self._num_workers = 1
         else:
             self._worker_id = worker_info.id
             self._num_workers = worker_info.num_workers
-        
-        # Открытие файла (поддержка сжатия)
-        if self.data_path.suffix == '.gz':
-            self._file = gzip.open(self.data_path, 'rt', encoding='utf-8')
+
+        # Open file (compression support)
+        if self.data_path.suffix == ".gz":
+            try:
+                self._file = gzip.open(self.data_path, "rt", encoding="utf-8")
+            except Exception as e:
+                raise RuntimeError(f"Failed to open file {self.data_path}: {e}") from None
         else:
-            self._file = open(self.data_path, 'r', encoding='utf-8')
-        
+            try:
+                self._file = open(self.data_path, "r", encoding="utf-8")
+            except Exception as e:
+                raise RuntimeError(f"Failed to open file {self.data_path}: {e}") from None
+
         self._global_line_idx = 0
-        
+
         return self
-    
+
     def __next__(self) -> Dict[str, Any]:
-        """Получить следующий элемент из потока."""
+        """Get next element from stream."""
         if self._file is None:
             raise StopIteration
-        
-        # Заполнение буфера если пуст
+
+        # Fill buffer if empty
         if not self._buffer:
             self._fill_buffer()
-        
-        # Буфер пуст и файл прочитан до конца
+
+        # Buffer empty and file read to end
         if not self._buffer:
             self._close_file()
             raise StopIteration
-        
-        # Получение элемента из буфера
-        text = self._buffer.pop(0)
+
+        # Get element from buffer
+        text = self._buffer.popleft()
         self._line_count += 1
-        
-        # Токенизация
+
+        # Tokenization
         if self.tokenizer:
             return self._tokenize(text)
-        
+
         return {"inputs": text, "text": text}
-    
+
     def _fill_buffer(self) -> None:
-        """Заполнить буфер следующими строками."""
+        """Fill buffer with next lines."""
         if self._file is None:
             return
-        
-        self._buffer = []
-        
+
+        self._buffer = deque()
+
         for _ in range(self.buffer_size):
             line = self._file.readline()
             if not line:
                 break
             line_idx = self._global_line_idx
             self._global_line_idx += 1
-            if self._num_workers > 1 and (
-                line_idx % self._num_workers != self._worker_id
-            ):
+            if self._num_workers > 1 and (line_idx % self._num_workers != self._worker_id):
                 continue
-            
+
             try:
-                # Парсинг JSONL
+                # Parse JSONL
                 record = json.loads(line)
-                
-                # Форматирование
+
+                # Formatting
                 if self.format_fn:
                     text = self.format_fn(record)
                 else:
                     text = record.get("text", record.get("content", ""))
-                
+
                 if text:
                     self._buffer.append(text)
-                    
+
             except json.JSONDecodeError:
-                # Пропуск некорректных строк
+                # Skip invalid lines
                 continue
-    
+
     def _tokenize(self, text: str) -> Dict[str, Any]:
-        """Токенизация текста."""
+        """Tokenize text."""
         if self.tokenizer is None:
             raise ValueError("Tokenizer required")
-        
+
         encoded = self.tokenizer(
             text,
             truncation=True,
@@ -185,54 +194,63 @@ class StreamingTextDataset(StreamingDataset):
             padding="max_length",
             return_tensors="pt",
         )
-        
+
         return {
             "input_ids": encoded["input_ids"].squeeze(0),
             "attention_mask": encoded["attention_mask"].squeeze(0),
             "labels": encoded["input_ids"].squeeze(0).clone(),
         }
-    
+
     def _close_file(self) -> None:
-        """Закрыть файл."""
+        """Close file."""
         if self._file is not None:
             try:
                 self._file.close()
             except Exception:
                 pass
             self._file = None
-    
+
     def __del__(self):
-        """Гарантированное закрытие файла."""
+        """Guaranteed file closing."""
         self._close_file()
-    
+
     def set_total_length(self, length: int) -> None:
-        """Установить известную длину датасета."""
+        """Set known dataset length."""
         self._total_lines = length
         super().set_total_length(length)
-    
+
     def get_stats(self) -> Dict[str, Any]:
-        """Статистика streaming датасета."""
+        """Streaming dataset statistics."""
         stats = super().get_stats()
-        stats.update({
-            "data_path": str(self.data_path),
-            "buffer_size": self.buffer_size,
-            "lines_read": self._line_count,
-        })
+        stats.update(
+            {
+                "data_path": str(self.data_path),
+                "buffer_size": self.buffer_size,
+                "lines_read": self._line_count,
+            }
+        )
         return stats
 
 
 class StreamingCSVDataset(StreamingDataset):
     """
-    Streaming датасет для CSV файлов.
-    
-    Пример использования:
+    Streaming dataset for large CSV files.
+
+    Important:
+        __iter__ returns self, which means:
+        - NOT thread-safe: do not use one object from multiple threads
+        - DO NOT create multiple iterators from one object in one process
+        - Repeated calls to iter(dataset) will reset the first iterator's state
+        - For parallel processing, use num_workers in DataLoader
+
+    Example usage:
         dataset = StreamingCSVDataset(
             data_path="./data/huge_dataset.csv",
             text_column="review",
             label_column="sentiment",
         )
     """
-    
+
     def __init__(
         self,
         data_path: Union[str, Path],
@@ -243,39 +261,36 @@ class StreamingCSVDataset(StreamingDataset):
         total_lines: Optional[int] = None,
     ) -> None:
         super().__init__()
-        
+
         self.data_path = Path(data_path)
         self.text_column = text_column
         self.label_column = label_column
         self.buffer_size = buffer_size
         self.format_fn = format_fn
         self._total_lines = total_lines
-        
+
         self._file = None
-        self._buffer: List[Dict] = []
+        self._buffer: Deque[Dict[str, Any]] = deque()
         self._line_count = 0
         self._headers: Optional[List[str]] = None
         self._reader: Optional[csv.DictReader] = None
         self._global_line_idx = 0
         self._worker_id = 0
         self._num_workers = 1
-        
+
         if not self.data_path.exists():
-            raise FileNotFoundError(f"Файл не найден: {self.data_path}")
-    
+            raise FileNotFoundError(f"File not found: {self.data_path}")
+
     def __iter__(self):
-        """Итератор с поддержкой multi-processing."""
+        """Iterator with multi-processing support."""
         worker_info = torch.utils.data.get_worker_info()
-        
-        # Сброс состояния
-        self._buffer = []
+
+        # Reset state
+        self._buffer = deque()
         self._line_count = 0
-        
-        if self._file is not None:
-            try:
-                self._file.close()
-            except Exception:
-                pass
+
+        # Close old file before opening new one
+        self._close_file()
         self._reader = None
 
         if worker_info is None:
@@ -284,82 +299,86 @@ class StreamingCSVDataset(StreamingDataset):
         else:
             self._worker_id = worker_info.id
             self._num_workers = worker_info.num_workers
-        
-        # Открытие CSV файла
-        self._file = open(self.data_path, 'r', encoding='utf-8', newline='')
-        self._reader = csv.DictReader(self._file)
-        self._headers = self._reader.fieldnames
+
+        # Open CSV file with error handling
+        try:
+            self._file = open(self.data_path, "r", encoding="utf-8", newline="")
+            self._reader = csv.DictReader(self._file)
+            self._headers = self._reader.fieldnames
+        except Exception as e:
+            raise RuntimeError(f"Failed to open CSV file {self.data_path}: {e}") from None
+
         self._global_line_idx = 0
-        
+
         return self
-    
+
     def __next__(self) -> Dict[str, Any]:
-        """Получить следующий элемент."""
+        """Get next element."""
         if self._file is None:
             raise StopIteration
-        
+
         if not self._buffer:
             self._fill_buffer()
-        
+
         if not self._buffer:
             self._close_file()
             raise StopIteration
-        
-        record = self._buffer.pop(0)
+
+        record = self._buffer.popleft()
         self._line_count += 1
-        
-        # Форматирование
+
+        # Formatting
         if self.format_fn:
             return self.format_fn(record)
-        
-        # Извлечение текста и метки
+
+        # Extract text and label
         result = {"inputs": record.get(self.text_column, "")}
-        
+
         if self.label_column and self.label_column in record:
             result["labels"] = record[self.label_column]
-        
+
         return result
-    
+
     def _fill_buffer(self) -> None:
-        """Заполнить буфер следующими строками."""
+        """Fill buffer with next lines."""
         if self._file is None:
             return
-        
-        self._buffer = []
+
+        self._buffer = deque()
         if self._reader is None:
             return
-        
+
         for _ in range(self.buffer_size):
             try:
                 record = next(self._reader)
                 line_idx = self._global_line_idx
                 self._global_line_idx += 1
-                if self._num_workers > 1 and (
-                    line_idx % self._num_workers != self._worker_id
-                ):
+                if self._num_workers > 1 and (line_idx % self._num_workers != self._worker_id):
                     continue
                 self._buffer.append(record)
             except StopIteration:
                 break
-    
+
     def _close_file(self) -> None:
-        """Закрыть файл."""
+        """Close file."""
         if self._file is not None:
             try:
                 self._file.close()
             except Exception:
                 pass
             self._file = None
-    
+
     def __del__(self):
         self._close_file()
-    
+
     def get_stats(self) -> Dict[str, Any]:
         stats = super().get_stats()
-        stats.update({
-            "data_path": str(self.data_path),
-            "columns": self._headers,
-            "text_column": self.text_column,
-            "label_column": self.label_column,
-        })
+        stats.update(
+            {
+                "data_path": str(self.data_path),
+                "columns": self._headers,
+                "text_column": self.text_column,
+                "label_column": self.label_column,
+            }
+        )
         return stats

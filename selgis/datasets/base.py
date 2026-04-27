@@ -1,7 +1,7 @@
 """
-Базовые классы для всех датасетов Selgis.
+Base classes for all Selgis datasets.
 
-Единый интерфейс гарантирует совместимость с Trainer и DataLoader.
+Unified interface ensures compatibility with Trainer and DataLoader.
 """
 from __future__ import annotations
 from abc import ABC, abstractmethod
@@ -13,13 +13,13 @@ from torch.utils.data import Dataset, IterableDataset
 
 class BaseDataset(Dataset, ABC):
     """
-    Базовый класс для всех датасетов Selgis.
+    Base class for all Selgis datasets.
     
-    Гарантирует единый интерфейс для любого типа данных:
-    - Текст, изображения, аудио, табличные данные
-    - Мультимодальные данные
+    Ensures unified interface for any data type:
+    - Text, images, audio, tabular data
+    - Multimodal data
     
-    Пример наследования:
+    Example inheritance:
         class MyDataset(BaseDataset):
             def __init__(self, data_path):
                 super().__init__()
@@ -42,41 +42,41 @@ class BaseDataset(Dataset, ABC):
     
     @abstractmethod
     def __len__(self) -> int:
-        """Вернуть размер датасета."""
+        """Return dataset size."""
         pass
     
     @abstractmethod
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
-        Вернуть один элемент данных.
+        Return one data element.
         
         Returns:
-            dict с ключами, которые ожидает модель:
-            - "inputs": входные данные (тензоры, dict, tuple)
-            - "labels": таргеты (опционально)
-            - Дополнительные ключи (напр. "pixel_values", "metadata")
+            dict with keys expected by model:
+            - "inputs": input data (tensors, dict, tuple)
+            - "labels": targets (optional)
+            - Additional keys (e.g. "pixel_values", "metadata")
         """
         pass
     
     def validate(self) -> bool:
         """
-        Валидировать датасет перед использованием.
+        Validate dataset before use.
         
-        Проверяет:
-        - Датасет не пустой
-        - __getitem__ возвращает dict
-        - Есть ключ "inputs" или "input_ids"
+        Checks:
+        - Dataset is not empty
+        - __getitem__ returns dict
+        - Has "inputs" or "input_ids" key
         
         Returns:
-            True если валидация прошла успешно
+            True if validation passed
             
         Raises:
-            ValueError: Если датасет некорректен
+            ValueError: If dataset is invalid
         """
         if len(self) == 0:
             raise ValueError("Dataset is empty!")
         
-        # Проверка первого элемента
+        # Check first element
         try:
             sample = self[0]
         except Exception as e:
@@ -84,17 +84,17 @@ class BaseDataset(Dataset, ABC):
         
         if not isinstance(sample, dict):
             raise ValueError(
-                f"__getitem__ должен возвращать dict, получил {type(sample)}"
+                f"__getitem__ must return dict, got {type(sample)}"
             )
         
-        # Проверка обязательных ключей
+        # Check required keys
         required_keys = {"inputs", "input_ids"}
         actual_keys = set(sample.keys())
         
         if not required_keys.intersection(actual_keys):
             raise ValueError(
-                f"Элемент должен содержать один из ключей: {required_keys}. "
-                f"Получены ключи: {list(actual_keys)}"
+                f"Element must contain one of keys: {required_keys}. "
+                f"Got keys: {list(actual_keys)}"
             )
         
         self._validated = True
@@ -103,21 +103,21 @@ class BaseDataset(Dataset, ABC):
     @property
     def collate_fn(self) -> Callable | None:
         """
-        Вернуть функцию для collate батчей.
+        Return function for collating batches.
         
-        Переопределите в подклассах для кастомной логики.
+        Override in subclasses for custom logic.
         
         Returns:
-            Функция collate_fn для DataLoader, или None для стандартной
+            Collate_fn function for DataLoader, or None for default
         """
         return None
     
     def get_stats(self) -> Dict[str, Any]:
         """
-        Вернуть статистику датасета.
+        Return dataset statistics.
         
         Returns:
-            dict со статистикой (размер, среднее время загрузки, и т.д.)
+            dict with statistics (size, average load time, etc.)
         """
         return {
             "length": len(self),
@@ -128,14 +128,14 @@ class BaseDataset(Dataset, ABC):
 
 class StreamingDataset(IterableDataset, ABC):
     """
-    Базовый класс для streaming датасетов.
+    Base class for streaming datasets.
     
-    Наследуется от IterableDataset, что корректно работает с DataLoader:
-    - Поддерживает num_workers > 0
-    - Не требует индексации
-    - Данные загружаются потоком по одному элементу
+    Inherits from IterableDataset, which works correctly with DataLoader:
+    - Supports num_workers > 0
+    - No indexing required
+    - Data loaded as stream one element at a time
     
-    Пример использования:
+    Example usage:
         class MyStreamingDataset(StreamingDataset):
             def __init__(self, data_path):
                 super().__init__()
@@ -144,7 +144,7 @@ class StreamingDataset(IterableDataset, ABC):
             def __iter__(self):
                 worker_info = torch.utils.data.get_worker_info()
                 
-                # Разделение данных между воркерами
+                # Split data between workers
                 if worker_info is None:
                     start, end = 0, float('inf')
                 else:
@@ -168,44 +168,44 @@ class StreamingDataset(IterableDataset, ABC):
     
     def __len__(self) -> int:
         """
-        Вернуть размер датасета (опционально для streaming).
+        Return dataset size (optional for streaming).
         
         Returns:
-            Размер если известен, иначе 0
+            Size if known, otherwise 0
         """
         return self._total_length or 0
     
     @abstractmethod
     def __iter__(self):
         """
-        Итератор для streaming режима.
+        Iterator for streaming mode.
         
-        Должен быть реализован в подклассах.
+        Must be implemented in subclasses.
         
         Yields:
-            Элементы данных (dict)
+            Data elements (dict)
         """
         pass
     
     def set_total_length(self, length: int) -> None:
         """
-        Установить известную длину датасета.
+        Set known dataset length.
         
         Args:
-            length: Количество элементов
+            length: Number of elements
         """
         self._total_length = length
     
     def validate(self) -> bool:
-        """Валидация streaming датасета."""
-        # Проверка первого элемента через итерацию
+        """Validate streaming dataset."""
+        # Check first element via iteration
         try:
             iterator = iter(self)
             sample = next(iterator)
             
             if not isinstance(sample, dict):
                 raise ValueError(
-                    f"__iter__ должен возвращать dict, получил {type(sample)}"
+                    f"__iter__ must return dict, got {type(sample)}"
                 )
             
             required_keys = {"inputs", "input_ids"}
@@ -213,25 +213,25 @@ class StreamingDataset(IterableDataset, ABC):
             
             if not required_keys.intersection(actual_keys):
                 raise ValueError(
-                    f"Элемент должен содержать один из ключей: {required_keys}. "
-                    f"Получены ключи: {list(actual_keys)}"
+                    f"Element must contain one of keys: {required_keys}. "
+                    f"Got keys: {list(actual_keys)}"
                 )
             
             self._validated = True
             return True
             
         except StopIteration:
-            raise ValueError("StreamingDataset пустой!")
+            raise ValueError("StreamingDataset is empty!")
         except Exception as e:
             raise ValueError(f"Error validating streaming dataset: {e}")
     
     @property
     def collate_fn(self) -> Callable | None:
-        """Collate функция для streaming датасетов."""
+        """Collate function for streaming datasets."""
         return None
     
     def get_stats(self) -> Dict[str, Any]:
-        """Статистика streaming датасета."""
+        """Streaming dataset statistics."""
         return {
             "length": self._total_length if self._total_length else "unknown",
             "type": self.__class__.__name__,
