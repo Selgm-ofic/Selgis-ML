@@ -1,0 +1,86 @@
+# Selgis Configuration Example
+# Copy and modify for your use case
+
+# =============================================================================
+# Basic PyTorch Training
+# =============================================================================
+model_name_or_path: ""  # Leave empty for custom model
+max_epochs: 10
+learning_rate: 0.001
+batch_size: 32
+
+# Self-healing (enabled by default)
+nan_recovery: true
+spike_threshold: 3.0
+min_history_len: 10
+
+# Gradient clipping
+grad_clip_norm: 1.0
+
+# Checkpointing
+output_dir: ./output
+save_best_only: true
+save_total_limit: 3
+
+# =============================================================================
+# LLM Fine-tuning with LoRA (uncomment to use)
+# =============================================================================
+# model_name_or_path: "Qwen/Qwen2-0.5B"
+# use_peft: true
+# peft_config:
+#   r: 16
+#   lora_alpha: 32
+#   lora_dropout: 0.05
+#   target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+#   task_type: "CAUSAL_LM"
+
+# Quantization (75% memory savings)
+# quantization_type: "4bit"
+# bnb_4bit_compute_dtype: "bfloat16"
+# bnb_4bit_use_double_quant: true
+
+# Memory optimization
+# gradient_checkpointing: true
+# cpu_offload: true
+# device_map: "auto"
+
+# LR Settings
+# warmup_ratio: 0.1
+# scheduler_type: "cosine_restart"
+# min_lr: 1.0e-7
+
+# =============================================================================
+# Advanced (uncomment to enable)
+# =============================================================================
+# LR Finder (run before training)
+# lr_finder_enabled: false
+# lr_finder_steps: 100
+# lr_finder_start: 1.0e-6
+# lr_finder_end: 1.0
+
+# Early stopping
+# patience: 5
+# min_delta: 0.01
+# primary_metric: "accuracy"
+
+# Final Surge (break plateaus)
+# final_surge_factor: 5.0
+
+# Mixed precision
+# fp16: true
+# bf16: false
+
+# Gradient accumulation
+# gradient_accumulation_steps: 4
+
+# Regularization
+# weight_decay: 0.01
+# label_smoothing: 0.1
+
+# Resume from checkpoint
+# resume_from_checkpoint: "./output/checkpoint-epoch-4"
+
+# Data (if using CLI)
+# data_path: "./data.jsonl"
+# data_type: "text"
+# max_length: 512

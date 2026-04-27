@@ -24,6 +24,7 @@ Tests:
     15. Pretrain 15 Epochs (extended training)
     16. CUDA Test (GPU verification)
 """
+
 import sys
 import time
 import torch
@@ -58,9 +59,62 @@ def print_warning(text: str):
     print(f"{YELLOW}⚠ {text}{RESET}")
 
 
+class ResNetSyntheticDataset(Dataset):
+    def __init__(self):
+        self.size = 100
+        self.X = torch.randn(100, 20)
+        self.y = torch.randint(0, 2, (100,))
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        return {"inputs": self.X[idx].float(), "labels": self.y[idx]}
+
+
+class TransformerSyntheticDataset(Dataset):
+    def __init__(self):
+        self.size = 100
+        self.X = torch.randint(0, 100, (100, 8))
+        self.y = torch.randint(0, 2, (100,))
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        return {"inputs": self.X[idx], "labels": self.y[idx]}
+
+
+class CNNSyntheticDataset(Dataset):
+    def __init__(self):
+        self.size = 100
+        self.X = torch.randn(100, 10)
+        self.y = torch.randint(0, 2, (100,))
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        return {"inputs": self.X[idx].float(), "labels": self.y[idx]}
+
+
+class LSTMSyntheticDataset(Dataset):
+    def __init__(self):
+        self.size = 100
+        self.X = torch.randn(100, 8, 10)
+        self.y = torch.randint(0, 2, (100,))
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        return {"inputs": self.X[idx].float(), "labels": self.y[idx]}
+
+
 # =============================================================================
 # BASIC TESTS (1-12)
 # =============================================================================
+
 
 def test_imports():
     """Test 1: Check all imports."""
@@ -72,6 +126,7 @@ def test_imports():
     try:
         import torch
         import numpy
+
         print_success(f"torch {torch.__version__}")
         print_success(f"numpy {numpy.__version__}")
     except ImportError as e:
@@ -82,6 +137,7 @@ def test_imports():
     # Selgis imports
     try:
         from selgis import __version__
+
         print_success(f"selgis {__version__}")
     except ImportError as e:
         errors.append(f"selgis: {e}")
@@ -139,23 +195,25 @@ def test_config():
             batch_size=32,
             lr_finder_enabled=False,
         )
-        print_success(f"SelgisConfig: max_epochs={config.max_epochs}, batch_size={config.batch_size}")
+        print_success(
+            f"SelgisConfig: max_epochs={config.max_epochs}, batch_size={config.batch_size}"
+        )
 
         # TransformerConfig
+        _device = "cuda" if torch.cuda.is_available() else "cpu"
+        _quant = "4bit" if torch.cuda.is_available() else "no"
+
         tf_config = TransformerConfig(
             model_name_or_path="test-model",
             use_peft=True,
-            quantization_type="4bit",
-            peft_config={
-                "r":16,
-                "lora_alpha": 32,
-                "lora_dropout": 0.05
-            },
-            device="cuda",
+            quantization_type=_quant,
+            peft_config={"r": 16, "lora_alpha": 32, "lora_dropout": 0.05},
+            device=_device,
         )
-        
-        
-        print_success(f"TransformerConfig: model={tf_config.model_name_or_path}, peft={tf_config.use_peft}")
+
+        print_success(
+            f"TransformerConfig: model={tf_config.model_name_or_path}, peft={tf_config.use_peft}"
+        )
 
         # DatasetConfig
         ds_config = DatasetConfig(
@@ -164,7 +222,9 @@ def test_config():
             batch_size=32,
             max_length=512,
         )
-        print_success(f"DatasetConfig: data_type={ds_config.data_type}, data_path={ds_config.data_path}")
+        print_success(
+            f"DatasetConfig: data_type={ds_config.data_type}, data_path={ds_config.data_path}"
+        )
 
         # Serialization
         ds_dict = ds_config.to_dict()
@@ -255,6 +315,7 @@ def test_datasets():
         errors.append(f"Datasets: {e}")
         print_error(f"Datasets: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -311,6 +372,7 @@ def test_dataloaders():
         errors.append(f"DataLoader: {e}")
         print_error(f"DataLoader: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -413,6 +475,7 @@ def test_trainer():
         errors.append(f"Trainer: {e}")
         print_error(f"Trainer: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -464,6 +527,7 @@ def test_callbacks():
         errors.append(f"Callbacks: {e}")
         print_error(f"Callbacks: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -549,6 +613,7 @@ def test_loss_decreases():
 
         # Check history via HistoryCallback
         from selgis import HistoryCallback
+
         history_cb = None
         for cb in trainer.callbacks:
             if isinstance(cb, HistoryCallback):
@@ -577,12 +642,13 @@ def test_loss_decreases():
                 f"(expected < {threshold:.4f})"
             )
         else:
-            print_success(f"Loss decreased by {(1 - last_loss/first_loss)*100:.1f}%")
+            print_success(f"Loss decreased by {(1 - last_loss / first_loss) * 100:.1f}%")
 
     except Exception as e:
         errors.append(f"E2E Loss Decrease: {e}")
         print_error(f"E2E Loss Decrease: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -639,8 +705,6 @@ def test_utils():
         inputs, labels = unpack_batch(batch_tuple)
         print_success(f"unpack_batch(tuple): inputs={inputs.shape}, labels={labels.shape}")
 
-        # is_dict_like
-        from transformers import BatchEncoding
         print_success(f"is_dict_like({{}}): {is_dict_like({})}")
 
         # get_optimizer_grouped_params
@@ -652,6 +716,7 @@ def test_utils():
         errors.append(f"Utils: {e}")
         print_error(f"Utils: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -676,7 +741,11 @@ def test_custom_architectures():
                 super().__init__()
                 self.fc1 = nn.Linear(in_features, out_features)
                 self.fc2 = nn.Linear(out_features, out_features)
-                self.residual = nn.Linear(in_features, out_features) if in_features != out_features else nn.Identity()
+                self.residual = (
+                    nn.Linear(in_features, out_features)
+                    if in_features != out_features
+                    else nn.Identity()
+                )
                 self.norm = nn.LayerNorm(out_features)
 
             def forward(self, x, **kwargs):
@@ -728,7 +797,9 @@ def test_custom_architectures():
         class CNNBlock(nn.Module):
             def __init__(self, in_channels, out_channels, kernel_size=3):
                 super().__init__()
-                self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, padding=kernel_size//2)
+                self.conv = nn.Conv1d(
+                    in_channels, out_channels, kernel_size, padding=kernel_size // 2
+                )
                 self.norm = nn.BatchNorm1d(out_channels)
 
             def forward(self, x, **kwargs):
@@ -753,7 +824,9 @@ def test_custom_architectures():
         class LSTMLike(nn.Module):
             def __init__(self, input_dim=10, hidden_dim=64, num_layers=2, num_classes=10):
                 super().__init__()
-                self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.1)
+                self.lstm = nn.LSTM(
+                    input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.1
+                )
                 self.fc = nn.Linear(hidden_dim, num_classes)
 
             def forward(self, inputs, **kwargs):
@@ -766,19 +839,24 @@ def test_custom_architectures():
 
         # --- Test ResNet-like ---
         model_resnet = ResNetLike(input_dim=20, hidden_dim=64, num_classes=2)
-        dataset_resnet = type('SyntheticDataset', (Dataset,), {
-            '__init__': lambda self: setattr(self, 'size', 100) or setattr(self, 'X', torch.randn(100, 20)) or setattr(self, 'y', torch.randint(0, 2, (100,))),
-            '__len__': lambda self: self.size,
-            '__getitem__': lambda self, idx: {"inputs": self.X[idx].float(), "labels": self.y[idx]}
-        })()
+        dataset_resnet = ResNetSyntheticDataset()
         loader_resnet = DataLoader(dataset_resnet, batch_size=16, shuffle=True)
 
-        config = SelgisConfig(max_epochs=3, batch_size=16, lr_finder_enabled=False, logging_steps=10)
-        trainer_resnet = Trainer(model=model_resnet, config=config, train_dataloader=loader_resnet,
-                                  eval_dataloader=loader_resnet, criterion=nn.CrossEntropyLoss())
+        config = SelgisConfig(
+            max_epochs=3, batch_size=16, lr_finder_enabled=False, logging_steps=10
+        )
+        trainer_resnet = Trainer(
+            model=model_resnet,
+            config=config,
+            train_dataloader=loader_resnet,
+            eval_dataloader=loader_resnet,
+            criterion=nn.CrossEntropyLoss(),
+        )
         trainer_resnet.train()
 
-        history_cb = next((cb for cb in trainer_resnet.callbacks if isinstance(cb, HistoryCallback)), None)
+        history_cb = next(
+            (cb for cb in trainer_resnet.callbacks if isinstance(cb, HistoryCallback)), None
+        )
         if history_cb and len(history_cb.history) >= 2:
             first_loss = history_cb.history[0]["metrics"]["loss"]
             last_loss = history_cb.history[-1]["metrics"]["loss"]
@@ -788,44 +866,49 @@ def test_custom_architectures():
                 print_warning(f"ResNet-like: loss didn't decrease")
 
         # --- Test Transformer-like ---
-        model_transformer = TransformerLike(vocab_size=100, embed_dim=64, num_heads=4, num_classes=2)
-        dataset_transformer = type('SyntheticDataset', (Dataset,), {
-            '__init__': lambda self: setattr(self, 'size', 100) or setattr(self, 'X', torch.randint(0, 100, (100, 8))) or setattr(self, 'y', torch.randint(0, 2, (100,))),
-            '__len__': lambda self: self.size,
-            '__getitem__': lambda self, idx: {"inputs": self.X[idx], "labels": self.y[idx]}
-        })()
+        model_transformer = TransformerLike(
+            vocab_size=100, embed_dim=64, num_heads=4, num_classes=2
+        )
+        dataset_transformer = TransformerSyntheticDataset()
         loader_transformer = DataLoader(dataset_transformer, batch_size=16, shuffle=True)
 
-        trainer_transformer = Trainer(model=model_transformer, config=config, train_dataloader=loader_transformer,
-                                       eval_dataloader=loader_transformer, criterion=nn.CrossEntropyLoss())
+        trainer_transformer = Trainer(
+            model=model_transformer,
+            config=config,
+            train_dataloader=loader_transformer,
+            eval_dataloader=loader_transformer,
+            criterion=nn.CrossEntropyLoss(),
+        )
         trainer_transformer.train()
         print_success("Transformer-like: works")
 
         # --- Test CNN1D-like ---
         model_cnn = CNN1DLike(input_dim=10, num_channels=32, num_classes=2)
-        dataset_cnn = type('SyntheticDataset', (Dataset,), {
-            '__init__': lambda self: setattr(self, 'size', 100) or setattr(self, 'X', torch.randn(100, 10)) or setattr(self, 'y', torch.randint(0, 2, (100,))),
-            '__len__': lambda self: self.size,
-            '__getitem__': lambda self, idx: {"inputs": self.X[idx].float(), "labels": self.y[idx]}
-        })()
+        dataset_cnn = CNNSyntheticDataset()
         loader_cnn = DataLoader(dataset_cnn, batch_size=16, shuffle=True)
 
-        trainer_cnn = Trainer(model=model_cnn, config=config, train_dataloader=loader_cnn,
-                               eval_dataloader=loader_cnn, criterion=nn.CrossEntropyLoss())
+        trainer_cnn = Trainer(
+            model=model_cnn,
+            config=config,
+            train_dataloader=loader_cnn,
+            eval_dataloader=loader_cnn,
+            criterion=nn.CrossEntropyLoss(),
+        )
         trainer_cnn.train()
         print_success("CNN1D-like: works")
 
         # --- Test LSTM-like ---
         model_lstm = LSTMLike(input_dim=10, hidden_dim=64, num_layers=2, num_classes=2)
-        dataset_lstm = type('SyntheticDataset', (Dataset,), {
-            '__init__': lambda self: setattr(self, 'size', 100) or setattr(self, 'X', torch.randn(100, 8, 10)) or setattr(self, 'y', torch.randint(0, 2, (100,))),
-            '__len__': lambda self: self.size,
-            '__getitem__': lambda self, idx: {"inputs": self.X[idx].float(), "labels": self.y[idx]}
-        })()
+        dataset_lstm = LSTMSyntheticDataset()
         loader_lstm = DataLoader(dataset_lstm, batch_size=16, shuffle=True)
 
-        trainer_lstm = Trainer(model=model_lstm, config=config, train_dataloader=loader_lstm,
-                                eval_dataloader=loader_lstm, criterion=nn.CrossEntropyLoss())
+        trainer_lstm = Trainer(
+            model=model_lstm,
+            config=config,
+            train_dataloader=loader_lstm,
+            eval_dataloader=loader_lstm,
+            criterion=nn.CrossEntropyLoss(),
+        )
         trainer_lstm.train()
         print_success("LSTM-like: works")
 
@@ -833,6 +916,7 @@ def test_custom_architectures():
         errors.append(f"Custom Architectures: {e}")
         print_error(f"Custom Architectures: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -886,7 +970,9 @@ def test_cuda_support():
         model = SimpleModel().to(device)
         loader = DataLoader(SimpleDataset(), batch_size=16)
 
-        config_fp16 = SelgisConfig(max_epochs=2, batch_size=16, lr_finder_enabled=False, logging_steps=10, fp16=True)
+        config_fp16 = SelgisConfig(
+            max_epochs=2, batch_size=16, lr_finder_enabled=False, logging_steps=10, fp16=True
+        )
         trainer_fp16 = Trainer(
             model=model,
             config=config_fp16,
@@ -920,7 +1006,7 @@ def test_cuda_support():
         torch.cuda.empty_cache()
         print_success("torch.cuda.empty_cache(): works")
 
-        if hasattr(torch.cuda, 'memory_allocated'):
+        if hasattr(torch.cuda, "memory_allocated"):
             allocated = torch.cuda.memory_allocated(0) / 1024**2
             print_success(f"GPU memory allocated: {allocated:.2f} MB")
 
@@ -928,6 +1014,7 @@ def test_cuda_support():
         errors.append(f"CUDA Support: {e}")
         print_error(f"CUDA Support: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -958,7 +1045,9 @@ def test_llm_finetune():
         )
 
         print_success(f"Model loading: {config.model_name_or_path}")
-        print_success(f"LoRA config: r={config.peft_config['r']}, alpha={config.peft_config['lora_alpha']}")
+        print_success(
+            f"LoRA config: r={config.peft_config['r']}, alpha={config.peft_config['lora_alpha']}"
+        )
         print_success(f"target_modules: {config.peft_config['target_modules']}")
         print_success(f"task_type: {config.peft_config['task_type']}")
 
@@ -971,6 +1060,7 @@ def test_llm_finetune():
         errors.append(f"LLM Fine-tune: {e}")
         print_error(f"LLM Fine-tune: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -1019,19 +1109,25 @@ def test_pretrain_minimal():
                 return x
 
         class MinimalGPT(nn.Module):
-            def __init__(self, vocab_size=100, embed_dim=64, num_heads=4, num_layers=2, max_seq_len=32):
+            def __init__(
+                self, vocab_size=100, embed_dim=64, num_heads=4, num_layers=2, max_seq_len=32
+            ):
                 super().__init__()
                 self.token_embedding = nn.Embedding(vocab_size, embed_dim)
                 self.position_embedding = nn.Embedding(max_seq_len, embed_dim)
-                self.layers = nn.ModuleList([
-                    TransformerBlock(embed_dim, num_heads, embed_dim * 4)
-                    for _ in range(num_layers)
-                ])
+                self.layers = nn.ModuleList(
+                    [
+                        TransformerBlock(embed_dim, num_heads, embed_dim * 4)
+                        for _ in range(num_layers)
+                    ]
+                )
                 self.head = nn.Linear(embed_dim, vocab_size)
 
             def forward(self, inputs, **kwargs):
                 batch, seq_len = inputs.shape
-                positions = torch.arange(seq_len, device=inputs.device).unsqueeze(0).expand(batch, -1)
+                positions = (
+                    torch.arange(seq_len, device=inputs.device).unsqueeze(0).expand(batch, -1)
+                )
                 x = self.token_embedding(inputs) + self.position_embedding(positions)
                 for layer in self.layers:
                     x = layer(x)
@@ -1066,7 +1162,7 @@ def test_pretrain_minimal():
             embed_dim=embed_dim,
             num_heads=num_heads,
             num_layers=num_layers,
-            max_seq_len=seq_len
+            max_seq_len=seq_len,
         )
 
         total_params = sum(p.numel() for p in model.parameters())
@@ -1136,6 +1232,7 @@ def test_pretrain_minimal():
         errors.append(f"Pretrain Minimal: {e}")
         print_error(f"Pretrain Minimal: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -1144,6 +1241,7 @@ def test_pretrain_minimal():
 # =============================================================================
 # ADVANCED TESTS (13-16)
 # =============================================================================
+
 
 def test_rollback_procedure():
     """Test 13: Check rollback procedure."""
@@ -1182,7 +1280,9 @@ def test_rollback_procedure():
         print_success("SelgisCore created")
 
         # Save initial state
-        initial_state = {name: param.clone() for name, param in model.named_parameters() if param.requires_grad}
+        initial_state = {
+            name: param.clone() for name, param in model.named_parameters() if param.requires_grad
+        }
         print_success("Initial state saved")
 
         # Do several steps with normal loss
@@ -1199,7 +1299,7 @@ def test_rollback_procedure():
         print_success(f"Normal loss passes check: {normal_loss.item():.4f}")
 
         # Simulate NaN loss
-        nan_loss = torch.tensor(float('nan'))
+        nan_loss = torch.tensor(float("nan"))
         is_ok = core.check_loss(nan_loss)
         assert not is_ok, "NaN loss should trigger rollback"
         print_success("NaN loss detected — rollback triggered")
@@ -1244,7 +1344,7 @@ def test_rollback_procedure():
         )
         core3 = SelgisCore(model, optimizer, scheduler, config_no_recovery, device)
 
-        nan_loss = torch.tensor(float('nan'))
+        nan_loss = torch.tensor(float("nan"))
         is_ok = core3.check_loss(nan_loss)
         if is_ok:
             print_success("nan_recovery=False: NaN skipped (expected behavior)")
@@ -1256,6 +1356,7 @@ def test_rollback_procedure():
         errors.append(f"Rollback Procedure: {e}")
         print_error(f"Rollback Procedure: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -1280,7 +1381,7 @@ def test_self_healing_procedure():
 
             def forward(self, inputs, **kwargs):
                 if self.break_mode:
-                    return inputs.sum() * float('nan')
+                    return inputs.sum() * float("nan")
                 return self.net(inputs)
 
         # Simple dataset
@@ -1398,6 +1499,7 @@ def test_self_healing_procedure():
         errors.append(f"Self-healing Procedure: {e}")
         print_error(f"Self-healing Procedure: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -1445,19 +1547,25 @@ def test_pretrain_15_epochs():
                 return x
 
         class MinimalGPT(nn.Module):
-            def __init__(self, vocab_size=100, embed_dim=64, num_heads=4, num_layers=2, max_seq_len=32):
+            def __init__(
+                self, vocab_size=100, embed_dim=64, num_heads=4, num_layers=2, max_seq_len=32
+            ):
                 super().__init__()
                 self.token_embedding = nn.Embedding(vocab_size, embed_dim)
                 self.position_embedding = nn.Embedding(max_seq_len, embed_dim)
-                self.layers = nn.ModuleList([
-                    TransformerBlock(embed_dim, num_heads, embed_dim * 4)
-                    for _ in range(num_layers)
-                ])
+                self.layers = nn.ModuleList(
+                    [
+                        TransformerBlock(embed_dim, num_heads, embed_dim * 4)
+                        for _ in range(num_layers)
+                    ]
+                )
                 self.head = nn.Linear(embed_dim, vocab_size)
 
             def forward(self, inputs, **kwargs):
                 batch, seq_len = inputs.shape
-                positions = torch.arange(seq_len, device=inputs.device).unsqueeze(0).expand(batch, -1)
+                positions = (
+                    torch.arange(seq_len, device=inputs.device).unsqueeze(0).expand(batch, -1)
+                )
                 x = self.token_embedding(inputs) + self.position_embedding(positions)
                 for layer in self.layers:
                     x = layer(x)
@@ -1492,7 +1600,7 @@ def test_pretrain_15_epochs():
             embed_dim=embed_dim,
             num_heads=num_heads,
             num_layers=num_layers,
-            max_seq_len=seq_len
+            max_seq_len=seq_len,
         )
 
         total_params = sum(p.numel() for p in model.parameters())
@@ -1567,6 +1675,7 @@ def test_pretrain_15_epochs():
         errors.append(f"Pretrain 15 Epochs: {e}")
         print_error(f"Pretrain 15 Epochs: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -1610,7 +1719,9 @@ def test_cuda_if_available():
 
             model = SimpleModel()
             loader = DataLoader(SimpleDataset(), batch_size=16)
-            config = SelgisConfig(max_epochs=2, batch_size=16, lr_finder_enabled=False, logging_steps=10)
+            config = SelgisConfig(
+                max_epochs=2, batch_size=16, lr_finder_enabled=False, logging_steps=10
+            )
             trainer = Trainer(
                 model=model,
                 config=config,
@@ -1657,7 +1768,9 @@ def test_cuda_if_available():
         model = SimpleModel().to(device)
         loader = DataLoader(SimpleDataset(), batch_size=16)
 
-        config_fp16 = SelgisConfig(max_epochs=2, batch_size=16, lr_finder_enabled=False, logging_steps=10, fp16=True)
+        config_fp16 = SelgisConfig(
+            max_epochs=2, batch_size=16, lr_finder_enabled=False, logging_steps=10, fp16=True
+        )
         trainer_fp16 = Trainer(
             model=model,
             config=config_fp16,
@@ -1691,7 +1804,7 @@ def test_cuda_if_available():
         torch.cuda.empty_cache()
         print_success("torch.cuda.empty_cache(): works")
 
-        if hasattr(torch.cuda, 'memory_allocated'):
+        if hasattr(torch.cuda, "memory_allocated"):
             allocated = torch.cuda.memory_allocated(0) / 1024**2
             print_success(f"GPU memory allocated: {allocated:.2f} MB")
 
@@ -1699,6 +1812,7 @@ def test_cuda_if_available():
         errors.append(f"CUDA Test: {e}")
         print_error(f"CUDA Test: {e}")
         import traceback
+
         traceback.print_exc()
 
     return len(errors) == 0, errors
@@ -1707,6 +1821,7 @@ def test_cuda_if_available():
 # =============================================================================
 # MAIN
 # =============================================================================
+
 
 def main():
     """Run all tests."""
