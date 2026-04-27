@@ -6,19 +6,6 @@ training protection (NaN/spike rollback), LR finder, callbacks, PEFT/LoRA,
 and universal data loading (text, image, multimodal, streaming).
 """
 
-
-def _get_version() -> str:
-    """Return package version from metadata (single source: pyproject.toml)."""
-    try:
-        from importlib.metadata import version
-
-        return version("selgis")
-    except Exception:
-        return "0.2.5"
-
-
-__version__ = _get_version()
-
 from selgis.callbacks import (
     Callback,
     CheckpointCallback,
@@ -60,6 +47,22 @@ from selgis.utils import (
     to_dict,
     unpack_batch,
 )
+
+
+def __get_version() -> str:
+    """Return package version from pyproject.toml (lazy loading)."""
+    try:
+        from importlib.metadata import version as _v
+        return _v("selgis")
+    except Exception:
+        return "0.2.5"
+
+
+def __getattr__(name: str):
+    if name == "__version__":
+        return __get_version()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Config

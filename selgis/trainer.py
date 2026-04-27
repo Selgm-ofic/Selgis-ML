@@ -39,6 +39,9 @@ from selgis.utils import (
 
 logger = logging.getLogger(__name__)
 
+# Workaround for ruff F823 false positive in static methods
+_torch = torch
+
 
 class Trainer:
     """Universal trainer for PyTorch models.
@@ -665,14 +668,14 @@ class TransformerTrainer(Trainer):
         No-op if CUDA is unavailable.  Falls back to memory-efficient
         attention on GPUs older than Ampere (compute capability < 8.0).
         """
-        if not torch.cuda.is_available():
-            logger.debug("Flash Attention requires CUDA — skipped on CPU/MPS")
+        if not _torch.cuda.is_available():
+            logger.debug("Flash Attention requires CUDA -- skipped on CPU/MPS")
             return
 
         try:
             import torch.backends.cuda  # noqa: F401 (side-effect import)
 
-            sm_major, sm_minor = torch.cuda.get_device_capability()
+            sm_major, sm_minor = _torch.cuda.get_device_capability()
 
             if sm_major >= 8:
                 torch.backends.cuda.enable_flash_sdp(True)
@@ -683,12 +686,12 @@ class TransformerTrainer(Trainer):
                     sm_minor,
                 )
             else:
-                # Turing / Volta / older — Flash Attention not supported
+                # Turing / Volta / older - Flash Attention not supported
                 torch.backends.cuda.enable_mem_efficient_sdp(True)
                 torch.backends.cuda.enable_flash_sdp(False)
                 logger.info(
                     "Memory-efficient attention enabled "
-                    "(Flash Attention requires sm≥8.0; got sm%d.%d)",
+                    "(Flash Attention requires sm>=8.0; got sm%d.%d)",
                     sm_major,
                     sm_minor,
                 )
