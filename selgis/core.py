@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 import itertools
+import logging
 import warnings
 from collections import deque
-from contextlib import nullcontext, AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal
 
 import torch
 import torch.nn as nn
@@ -32,7 +32,7 @@ class SelgisCore:
         self,
         model: nn.Module,
         optimizer: torch.optim.Optimizer,
-        scheduler: Union[SmartScheduler, Any],
+        scheduler: SmartScheduler | Any,
         config: SelgisConfig,
         device: torch.device,
     ) -> None:
@@ -49,7 +49,7 @@ class SelgisCore:
         if self._state_storage not in {"disk", "memory"}:
             raise ValueError("state_storage must be 'disk' or 'memory'")
 
-        self._state_dir: Optional[Path] = None
+        self._state_dir: Path | None = None
         if self._state_storage == "disk":
             base_dir = getattr(config, "state_dir", None) or config.output_dir
             self._state_dir = Path(base_dir) / "selgis_state"
@@ -58,13 +58,13 @@ class SelgisCore:
         self._loss_history: deque[float] = deque(
             maxlen=max(self.config.min_history_len * 10, 1000),
         )
-        self._higher_is_better: Optional[bool] = None
+        self._higher_is_better: bool | None = None
         self._best_metric = float("-inf")
         self._best_loss = float("inf")
-        self._best_state: Optional[Union[dict, str]] = None
+        self._best_state: dict | str | None = None
         self._no_improve = 0
         self._surge_done = False
-        self._last_good_state: Optional[Union[dict, str]] = None
+        self._last_good_state: dict | str | None = None
         self._state_update_interval: int = getattr(
             config,
             "state_update_interval",

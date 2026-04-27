@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -242,7 +241,7 @@ class CrossEntropyLossV2(nn.Module):
         self.reduction = reduction
         self.ignore_index = ignore_index
 
-        self._chunked: Optional[ChunkedCrossEntropyLoss] = None
+        self._chunked: ChunkedCrossEntropyLoss | None = None
         if chunk_size > 0:
             self._chunked = ChunkedCrossEntropyLoss(
                 chunk_size=chunk_size,

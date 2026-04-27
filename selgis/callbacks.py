@@ -8,7 +8,7 @@ import shutil
 from abc import ABC
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn as nn
@@ -339,17 +339,17 @@ class LoggingCallback(Callback):
     def __init__(self, log_every: int = 10) -> None:
         self.log_every = log_every
 
-    def on_train_begin(self, trainer: "Trainer") -> None:
+    def on_train_begin(self, trainer: Trainer) -> None:
         """Print training start banner."""
         logger.info("Training started")
 
-    def on_train_end(self, trainer: "Trainer") -> None:
+    def on_train_end(self, trainer: Trainer) -> None:
         """Print training end banner."""
         logger.info("Training complete")
 
     def on_epoch_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         epoch: int,
         metrics: dict[str, float],
     ) -> None:
@@ -361,7 +361,7 @@ class LoggingCallback(Callback):
 
     def on_step_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         step: int,
         loss: float,
     ) -> None:
@@ -383,15 +383,15 @@ class WandBCallback(Callback):
     def __init__(
         self,
         project: str,
-        name: Optional[str] = None,
-        config: Optional[dict] = None,
+        name: str | None = None,
+        config: dict | None = None,
     ) -> None:
         self.project = project
         self.name = name
         self.config = config
         self._wandb = None
 
-    def on_train_begin(self, trainer: "Trainer") -> None:
+    def on_train_begin(self, trainer: Trainer) -> None:
         """Initialize W&B run."""
         try:
             import wandb
@@ -407,7 +407,7 @@ class WandBCallback(Callback):
 
     def on_step_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         step: int,
         loss: float,
     ) -> None:
@@ -419,7 +419,7 @@ class WandBCallback(Callback):
 
     def on_epoch_end(
         self,
-        trainer: "Trainer",
+        trainer: Trainer,
         epoch: int,
         metrics: dict[str, float],
     ) -> None:
@@ -432,7 +432,7 @@ class WandBCallback(Callback):
                 },
             )
 
-    def on_train_end(self, trainer: "Trainer") -> None:
+    def on_train_end(self, trainer: Trainer) -> None:
         """Finish W&B run."""
         if self._wandb is not None:
             self._wandb.finish()
@@ -557,108 +557,3 @@ class SparsityCallback(Callback):
         if total_params == 0:
             return 0.0
         return zero_params / total_params
-
-    def get_layer_sparsity(self, model: nn.Module) -> dict[str, float]:
-        """Return per-parameter sparsity for trainable parameters."""
-        result: dict[str, float] = {}
-        for name, param in model.named_parameters():
-            if not param.requires_grad or param.numel() == 0:
-                continue
-            zeros = (param.data == 0).sum().item()
-            result[name] = zeros / param.numel()
-        return result
-        """Apply magnitude pruning to eligible layers.
-
-        Args:
-            model: Model to prune.
-
-        Returns:
-            Number of layers pruned.
-        """
-        pruned_count = 0
-
-        for name, module in model.named_modules():
-            if not isinstance(
-                module,
-                (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d),
-            ):
-                continue
-            if not hasattr(module, "weight") or not module.weight.requires_grad:
-                continue
-            if self._should_skip(name):
-                continue
-            if module.weight.numel() < self.min_params_to_prune:
-                continue
-
-            self._prune_layer(module, name)
-            pruned_count += 1
-
-        return pruned_count
-
-    def _prune_layer(self, module: nn.Module, name: str) -> None:
-        """Zero the smallest weights in a single layer.
-
-        Args:
-            module: Layer whose ``weight`` tensor will be pruned.
-            name: Module name (for logging).
-        """
-        with torch.no_grad():
-            weight = module.weight.data
-            flat = weight.abs().view(-1)
-            k = int(flat.numel() * self.target_sparsity)
-
-            if k <= 0 or k >= flat.numel():
-                return
-
-            threshold = torch.kthvalue(flat, k).values.item()
-            mask = weight.abs() > threshold
-            weight.mul_(mask)
-
-            if self.log_details:
-                actual = (weight == 0).sum().item() / weight.numel()
-                logger.debug("Layer %s: sparsity=%.2f%%", name, actual * 100)
-
-    @staticmethod
-    def _compute_model_sparsity(model: nn.Module) -> float:
-        """Compute fraction of zero trainable parameters.
-
-        Args:
-            model: Model to inspect.
-
-        Returns:
-            Sparsity ratio in ``[0.0, 1.0]``.
-        """
-        total_params = 0
-        zero_params = 0
-
-        for param in model.parameters():
-            if not param.requires_grad:
-                continue
-            total_params += param.numel()
-            zero_params += (param.data == 0).sum().item()
-
-        if total_params == 0:
-            return 0.0
-        return zero_params / total_params
-
-    def get_layer_sparsity(
-        self,
-        model: nn.Module,
-    ) -> dict[str, float]:
-        """Return per-parameter sparsity for trainable parameters.
-
-        Args:
-            model: Model to inspect.
-
-        Returns:
-            Dictionary mapping parameter names to sparsity ratios.
-        """
-        result: dict[str, float] = {}
-
-        for name, param in model.named_parameters():
-            if not param.requires_grad or param.numel() == 0:
-                continue
-            zeros = (param.data == 0).sum().item()
-            result[name] = zeros / param.numel()
-
-        return result

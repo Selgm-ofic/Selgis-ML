@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import gc
 import math
-from contextlib import nullcontext, AbstractContextManager
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -233,8 +234,8 @@ class LRFinder:
     def _compute_loss(
         self,
         batch: Any,
-        forward_fn: Optional[Callable],
-    ) -> Optional[torch.Tensor]:
+        forward_fn: Callable | None,
+    ) -> torch.Tensor | None:
         """Compute loss for one batch.
 
         Args:

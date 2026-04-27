@@ -33,20 +33,20 @@ from selgis.config import SelgisConfig, TransformerConfig
 from selgis.core import SelgisCore
 from selgis.datasets import (
     BaseDataset,
-    StreamingDataset,
+    CustomDataset,
     DatasetConfig,
-    TextDataset,
     HFTextDataset,
     ImageDataset,
     MultimodalDataset,
+    StreamingDataset,
     StreamingTextDataset,
-    CustomDataset,
-    create_dataset,
+    TextDataset,
     create_dataloaders,
+    create_dataset,
     prepare_data_for_trainer,
 )
-from selgis.lr_finder import LRFinder
 from selgis.loss import ChunkedCrossEntropyLoss, CrossEntropyLossV2
+from selgis.lr_finder import LRFinder
 from selgis.scheduler import SmartScheduler, get_transformer_scheduler
 from selgis.trainer import Trainer, TransformerTrainer
 from selgis.utils import (

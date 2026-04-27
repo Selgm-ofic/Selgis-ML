@@ -6,8 +6,9 @@ import gc
 import json
 import logging
 import math
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -24,8 +25,8 @@ from selgis.callbacks import (
 from selgis.checkpointing import GradientCheckpointingManager
 from selgis.config import SelgisConfig, TransformerConfig
 from selgis.core import SelgisCore
+from selgis.loss import CrossEntropyLossV2
 from selgis.lr_finder import LRFinder
-from selgis.loss import ChunkedCrossEntropyLoss, CrossEntropyLossV2
 from selgis.scheduler import SmartScheduler
 from selgis.utils import (
     get_device,
@@ -54,12 +55,12 @@ class Trainer:
         model: nn.Module,
         config: SelgisConfig,
         train_dataloader: DataLoader,
-        eval_dataloader: Optional[DataLoader] = None,
-        criterion: Optional[nn.Module] = None,
-        optimizer: Optional[optim.Optimizer] = None,
-        callbacks: Optional[list[Callback]] = None,
-        forward_fn: Optional[Callable[[nn.Module, Any], tuple[torch.Tensor, torch.Tensor]]] = None,
-        compute_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], dict[str, float]]] = None,
+        eval_dataloader: DataLoader | None = None,
+        criterion: nn.Module | None = None,
+        optimizer: optim.Optimizer | None = None,
+        callbacks: list[Callback] | None = None,
+        forward_fn: Callable[[nn.Module, Any], tuple[torch.Tensor, torch.Tensor]] | None = None,
+        compute_metrics: Callable[[torch.Tensor, torch.Tensor], dict[str, float]] | None = None,
     ) -> None:
         self.model = model
         self.config = config
@@ -199,7 +200,7 @@ class Trainer:
             state_format = "full"
             meta_path = checkpoint_dir / "metrics.json"
             if meta_path.exists():
-                with open(meta_path, "r", encoding="utf-8") as f:
+                with open(meta_path, encoding="utf-8") as f:
                     meta = json.load(f)
                 state_format = meta.get("state_format", "full")
 
@@ -218,7 +219,7 @@ class Trainer:
 
         metrics_path = checkpoint_dir / "metrics.json"
         if metrics_path.exists():
-            with open(metrics_path, "r", encoding="utf-8") as f:
+            with open(metrics_path, encoding="utf-8") as f:
                 meta = json.load(f)
             self._resume_meta = meta
             self._global_step = int(meta.get("global_step", 0))
@@ -347,7 +348,7 @@ class Trainer:
         if hasattr(self.scheduler, "step"):
             self.scheduler.step()
 
-    def _training_step(self, batch: Any) -> Optional[float]:
+    def _training_step(self, batch: Any) -> float | None:
         with self.selgis.get_amp_context():
             loss, logits = self._forward(batch)
 
@@ -426,7 +427,7 @@ class Trainer:
         regression_se_sum = 0.0
         regression_ae_sum = 0.0
         regression_count = 0
-        current_preds: Optional[torch.Tensor] = None
+        current_preds: torch.Tensor | None = None
 
         for batch in self.eval_dataloader:
             _, labels = unpack_batch(batch)
@@ -557,10 +558,10 @@ class TransformerTrainer(Trainer):
 
     def __init__(
         self,
-        model_or_path: Union[nn.Module, str],
+        model_or_path: nn.Module | str,
         config: TransformerConfig,
         train_dataloader: DataLoader,
-        eval_dataloader: Optional[DataLoader] = None,
+        eval_dataloader: DataLoader | None = None,
         tokenizer: Any = None,
         **kwargs: Any,
     ) -> None:
@@ -992,9 +993,9 @@ class TransformerTrainer(Trainer):
         self,
         model: nn.Module,
         peft_config: dict,
-        problem_type: Optional[str] = None,
+        problem_type: str | None = None,
         gradient_checkpointing: bool = False,
-        adapter_name_or_path: Optional[str] = None,
+        adapter_name_or_path: str | None = None,
     ) -> nn.Module:
         try:
             from peft import (

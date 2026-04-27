@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
-import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 

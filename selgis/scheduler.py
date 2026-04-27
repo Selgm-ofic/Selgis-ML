@@ -1,8 +1,9 @@
 """LR schedulers: warmup, cosine (with restarts), linear, polynomial."""
 
+from __future__ import annotations
+
 import math
 import warnings
-from typing import Optional
 
 import torch.optim as optim
 
@@ -25,7 +26,7 @@ class SmartScheduler:
         optimizer: optim.Optimizer,
         initial_lr: float,
         config: SelgisConfig,
-        num_training_steps: Optional[int] = None,
+        num_training_steps: int | None = None,
     ) -> None:
         self.optimizer = optimizer
         self.initial_lr = initial_lr

@@ -267,7 +267,6 @@ def _train_from_config(config_path: Path) -> int:
         )
         return 1
 
-    import torch.nn as nn
 
     from selgis import TransformerConfig
 
@@ -401,7 +400,7 @@ def _train_demo() -> int:
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
 
-    from selgis import Trainer, SelgisConfig
+    from selgis import SelgisConfig, Trainer
     from selgis.utils import seed_everything
 
     print("[INFO] Running demo training (synthetic data)...")

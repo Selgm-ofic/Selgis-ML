@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 
 @dataclass
@@ -26,11 +26,11 @@ class SelgisConfig:
     patience: int = 5
     min_delta: float = 1e-4
     final_surge_factor: float = 5.0
-    primary_metric: Optional[str] = None
+    primary_metric: str | None = None
 
     # === Gradient ===
     grad_clip_norm: float = 1.0
-    grad_clip_value: Optional[float] = None
+    grad_clip_value: float | None = None
 
     # === Anomaly Detection ===
     spike_threshold: float = 3.0
@@ -73,17 +73,17 @@ class SelgisConfig:
 
     # === Logging ===
     logging_steps: int = 10
-    eval_steps: Optional[int] = None
-    save_steps: Optional[int] = None
+    eval_steps: int | None = None
+    save_steps: int | None = None
 
     # === Checkpointing ===
     output_dir: str = "./output"
     save_total_limit: int = 3
     save_best_only: bool = True
     state_storage: Literal["disk", "memory"] = "disk"
-    state_dir: Optional[str] = None
+    state_dir: str | None = None
     state_update_interval: int = 100
-    resume_from_checkpoint: Optional[str] = None
+    resume_from_checkpoint: str | None = None
 
     # === Device ===
     device: str = "auto"
@@ -153,7 +153,7 @@ class TransformerConfig(SelgisConfig):
         "masked_lm",
     ] = "single_label_classification"
     trust_remote_code: bool = False
-    device_map: Optional[str] = None
+    device_map: str | None = None
 
     # === Tokenizer ===
     max_length: int = 512
@@ -179,7 +179,7 @@ class TransformerConfig(SelgisConfig):
     # === LoRA / PEFT ===
     use_peft: bool = False
     peft_config: dict[str, Any] = field(default_factory=dict)
-    adapter_name_or_path: Optional[str] = None
+    adapter_name_or_path: str | None = None
 
     # === Gradient Checkpointing ===
     gradient_checkpointing: bool = False
@@ -193,7 +193,7 @@ class TransformerConfig(SelgisConfig):
     flash_attention: bool = False
 
     # === DeepSpeed ===
-    deepspeed_config: Optional[str] = None
+    deepspeed_config: str | None = None
 
     # === Quantization (BitsAndBytes) ===
     quantization_type: Literal["no", "8bit", "4bit"] = "no"
