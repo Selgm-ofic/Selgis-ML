@@ -208,11 +208,16 @@ class ImageDataset(BaseDataset):
         stats = super().get_stats()
 
         load_times = self._metrics["load_time_ms"]
+        p95 = (
+            sorted(load_times)[int(len(load_times) * 0.95)]
+            if len(load_times) > 20
+            else 0
+        )
         stats.update({
             "avg_load_time_ms": sum(load_times) / len(load_times) if load_times else 0,
-            "p95_load_time_ms": sorted(load_times)[int(len(load_times) * 0.95)] if len(load_times) > 20 else 0,
+            "p95_load_time_ms": p95,
             "num_classes": len(self._class_names),
-            "class_names": self._class_names[:10],  # First 10 for debugging
+            "class_names": self._class_names[:10],
         })
 
         return stats
