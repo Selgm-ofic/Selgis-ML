@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-04-28
+
+### Added
+
+- **Unsloth Integration** - New `use_unsloth` flag in `TransformerConfig`:
+  - ~2x faster training, ~50% less VRAM
+  - Works with Llama, Qwen, Mistral, Phi, Gemma, Gemma 4
+  - Automatic detection for Gemma 4 chat template fix
+
+- **`use_unsloth`** - Enable Unsloth optimization in TransformerConfig:
+
+```python
+config = TransformerConfig(
+    model_name_or_path="Qwen/Qwen2-0.5B",
+    use_unsloth=True,
+    use_peft=True,
+    peft_config={"r": 16},
+)
+```
+
+### Changed
+
+- **config.py**: Added `use_unsloth: bool = False` to TransformerConfig
+- **trainer.py**: Added `_apply_unsloth()` method for Unsloth integration
+- Updated docstrings and type hints
+
+### Fixed
+
+- All 16 tests passing
+- Ruff linter clean
+
+---
+
 ## [0.2.5] - 2026-04-27
 
 ### Added

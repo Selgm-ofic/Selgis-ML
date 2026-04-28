@@ -36,6 +36,9 @@ pip install selgis
 
 # Full (Transformers, LoRA, quantization)
 pip install "selgis[all]"
+
+# Unsloth support (recommended for LLM training)
+pip install unsloth
 ```
 
 ---
@@ -101,6 +104,7 @@ Techniques for large models on small GPUs:
 | CPU offload | 40% |
 | Gradient checkpointing | 40% |
 | LoRA (trainable only) | 99.9% |
+| **Unsloth** | **50% less VRAM, 2x faster** |
 
 ```python
 config = TransformerConfig(
@@ -111,6 +115,21 @@ config = TransformerConfig(
     peft_config={"r": 16},
 )
 ```
+
+### 2.1 Unsloth (NEW)
+
+~2x faster training with ~50% less VRAM:
+
+```python
+config = TransformerConfig(
+    model_name_or_path="Qwen/Qwen2-0.5B",
+    use_unsloth=True,
+    use_peft=True,
+    peft_config={"r": 16},
+)
+```
+
+Works with: Llama, Qwen, Mistral, Phi, Gemma, **Gemma 4**.
 
 ### 3. Final Surge
 
@@ -245,7 +264,7 @@ train_loader, eval_loader = create_dataloaders(config)
 selgis train
 
 # From config
-selgis train --config config.yaml (or .json)
+selgis train --config config.yaml
 
 # Check device
 selgis device
@@ -324,10 +343,10 @@ pytest
 
 ## Future Plans
 
-- [ ] **Unsloth integration** — priority
+- [x] **Unsloth integration** — DONE (v0.2.6)
   - 2x faster training, 50% less VRAM
-  - LoRA, QLoRA, RopeScaling
-  - Llama, Qwen, Mistral, Phi support
+  - Llama, Qwen, Mistral, Phi, Gemma, Gemma 4 support
+  - Run locally or from HuggingFace
 
 - [ ] **DeepSpeed full** — complete ZeRO, pipeline
 
@@ -336,8 +355,6 @@ pytest
 - [ ] **Distributed Training** — DDP, multi-GPU
 
 - [ ] **More schedulers** — OneCycle, ReduceLROnPlateau
-
-- [ ] **Streaming datasets** — petabyte-scale
 
 - [ ] **MLflow integration** — W&B alternative
 

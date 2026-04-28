@@ -1,6 +1,6 @@
 # Selgis ML API Documentation
 
-**Version:** 0.2.5
+**Version:** 0.2.6
 **Description:** Universal Training Framework for PyTorch and HuggingFace Transformers
 
 ---
@@ -30,6 +30,9 @@ pip install selgis
 
 # Full (Transformers, LoRA, quantization)
 pip install "selgis[all]"
+
+# Unsloth support (recommended for LLM training)
+pip install unsloth
 ```
 
 ---
@@ -227,6 +230,9 @@ config = TransformerConfig(
     # Flash Attention
     flash_attention=False,
 
+    # Unsloth (NEW - ~2x faster, ~50% less VRAM)
+    use_unsloth=False,
+
     # Quantization
     quantization_type="no",
     bnb_4bit_compute_dtype="float16",
@@ -245,6 +251,36 @@ config = TransformerConfig(
 | `quantization_type` | str | "no" | no, 8bit, 4bit |
 | `gradient_checkpointing` | bool | False | Enable gradient checkpointing |
 | `device_map` | str | None | auto, balanced, sequential |
+| `use_unsloth` | bool | False | Enable Unsloth (~2x faster training) |
+
+### Unsloth Integration (NEW)
+
+Unsloth provides ~2x faster training with ~50% less VRAM. Works with Llama, Qwen, Mistral, Phi, Gemma, Gemma 4.
+
+```python
+from selgis import TransformerConfig, TransformerTrainer
+
+# Unsloth + LoRA
+config = TransformerConfig(
+    model_name_or_path="Qwen/Qwen2-0.5B",
+    use_unsloth=True,
+    use_peft=True,
+    peft_config={"r": 16},
+)
+
+trainer = TransformerTrainer("Qwen/Qwen2-0.5B", config)
+trainer.train()
+
+# For Gemma 4
+config_gemma4 = TransformerConfig(
+    model_name_or_path="google/gemma-4-2b",
+    use_unsloth=True,
+    use_peft=True,
+    peft_config={"r": 16},
+)
+```
+
+Requires: `pip install unsloth`
 
 ---
 
