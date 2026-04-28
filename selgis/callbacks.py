@@ -87,7 +87,7 @@ class EarlyStoppingCallback(Callback):
         self.min_delta = min_delta
         self.metric = metric
         self.mode = mode
-        self.history = []
+        self.history: list = []
         self._best = float("inf") if mode == "min" else float("-inf")
         self._counter = 0
         self.should_stop = False
@@ -553,7 +553,8 @@ class SparsityCallback(Callback):
             if not param.requires_grad:
                 continue
             total_params += param.numel()
-            zero_params += (param.data == 0).sum().item()
+            zero = (param.data == 0).sum().item()  # type: ignore[union-attr]
+            zero_params += zero
         if total_params == 0:
             return 0.0
         return zero_params / total_params
