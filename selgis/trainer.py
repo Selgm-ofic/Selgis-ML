@@ -589,6 +589,10 @@ class TransformerTrainer(Trainer):
         if getattr(config, "flash_attention", False):
             self._try_enable_flash_attention()
 
+        # ── Unsloth ──────────────────────────────────────────────────
+        if getattr(config, "use_unsloth", False):
+            model = self._apply_unsloth(model, config)
+
         # ── PEFT / Gradient Checkpointing ────────────────────────────────
         if config.use_peft and (config.peft_config or config.adapter_name_or_path):
             model = self._apply_peft(
@@ -1075,6 +1079,85 @@ class TransformerTrainer(Trainer):
             f"({100 * trainable_params / total_params:.2f}%)"
         )
         return peft_model
+
+    def _apply_unsloth(
+        self,
+        model: nn.Module,
+        config: TransformerConfig,
+    ) -> nn.Module:
+        """Apply Unsloth for faster training.
+
+        Unsloth optimizes attention layers for ~2x speed and ~50% less VRAM.
+        Works with Llama, Qwen, Mistral, Phi, Gemma, Gemma 4.
+
+        Args:
+            model: The model to optimize.
+            config: Configuration with Unsloth settings.
+
+        Returns:
+            Model wrapped with Unsloth if available.
+        """
+        try:
+            from unsloth import FastLanguageModel
+        except ImportError:
+            print("[WARN] Unsloth not installed. Install with: pip install unsloth")
+            return model
+
+        max_seq_length = getattr(config, "max_length", 512)
+        dtype = torch.bfloat16 if config.bf16 else torch.float16
+        load_in_4bit = config.quantization_type == "4bit"
+
+        try:
+            current_model_path = getattr(config, "model_name_or_path", "")
+            if not current_model_path:
+                print("[WARN] Unsloth requires model_name_or_path. Skipping.")
+                return model
+
+            model_name_lower = current_model_path.lower()
+            is_gemma_4 = "gemma-4" in model_name_lower or "gemma4" in model_name_lower
+            if is_gemma_4:
+                print("[INFO] Gemma 4 detected - using Unsloth with transformers>=5.5.0")
+
+            print(f"[INFO] Applying Unsloth to {current_model_path}...")
+
+            unsloth_model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=current_model_path,
+                max_seq_length=max_seq_length,
+                dtype=dtype,
+                load_in_4bit=load_in_4bit,
+            )
+
+            if is_gemma_4 and tokenizer:
+                try:
+                    tokenizer.chat_template = tokenizer.chat_template.replace(
+                        "{% for message in messages %}",
+                        "{% raw %}{% for message in messages %}{% endraw %}"
+                    )
+                except Exception:
+                    pass
+
+            if getattr(config, "use_peft", False) and config.peft_config:
+                from peft import LoraConfig, get_peft_model
+
+                filtered = {k: v for k, v in config.peft_config.items() if k != "task_type"}
+                lora_config = LoraConfig(**filtered)
+                unsloth_model = get_peft_model(unsloth_model, lora_config)
+
+                trainable = sum(p.numel() for p in unsloth_model.parameters() if p.requires_grad)
+                total = sum(p.numel() for p in unsloth_model.parameters())
+                print(
+                    f"[INFO] Unsloth + LoRA: {trainable:,} / {total:,} trainable "
+                    f"({100 * trainable / total:.2f}%)"
+                )
+
+            self.tokenizer = tokenizer
+            print("[INFO] Unsloth applied successfully")
+
+            return unsloth_model
+
+        except Exception as e:
+            print(f"[WARN] Failed to apply Unsloth: {e}. Continuing without.")
+            return model
 
     def _create_optimizer(
         self,

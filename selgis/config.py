@@ -192,6 +192,9 @@ class TransformerConfig(SelgisConfig):
     # === Flash Attention ===
     flash_attention: bool = False
 
+    # === Unsloth ===
+    use_unsloth: bool = False
+
     # === DeepSpeed ===
     deepspeed_config: str | None = None
 
@@ -235,3 +238,6 @@ class TransformerConfig(SelgisConfig):
             raise ValueError(
                 f"gc_checkpoint_interval must be >= 1, got {self.gc_checkpoint_interval}"
             )
+
+        if self.use_unsloth and not self.use_peft:
+            print("[WARN] use_unsloth=True without use_peft=True. Applying Unsloth only.")

@@ -55,7 +55,7 @@ def __get_version() -> str:
         from importlib.metadata import version as _v
         return _v("selgis")
     except Exception:
-        return "0.2.5"
+        return "0.2.6"
 
 
 def __getattr__(name: str):
