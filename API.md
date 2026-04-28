@@ -308,9 +308,50 @@ config = DatasetConfig(
     buffer_size=1000,
     train_split=0.9,
     seed=42,
+    chat_format=None,  # Auto-detect chat format: alpaca, sharegpt, messages
+    user_role="user",   # Custom role name for user
+    assistant_role="assistant",  # Custom role name for assistant
 )
 
 train_loader, eval_loader = create_dataloaders(config)
+```
+
+### Chat Dataset Formats
+
+Selgis auto-detects chat dataset formats. Supported:
+
+| Format | Fields | Example |
+|-------|--------|---------|
+| Alpaca | instruction, input, output | `{"instruction": "...", "input": "...", "output": "..."}` |
+| ShareGPT | conversations | `{"conversations": [{"from": "human", "value": "..."}, ...]}` |
+| Messages | messages | `{"messages": [{"role": "user", "content": "..."}, ...]}` |
+
+```python
+# Auto-detect (default)
+config = DatasetConfig(
+    data_type="text",
+    data_path="./alpaca_data.jsonl",  # auto-detects alpaca format
+)
+
+# Custom roles (e.g., for Russian chat)
+config = DatasetConfig(
+    data_type="text",
+    data_path="./chat.jsonl",
+    chat_format="messages",
+    user_role="user",      # your custom role
+    assistant_role="assistant",  # your custom role
+)
+
+# HuggingFace datasets
+config = DatasetConfig(
+    data_type="text",
+    data_path="tatsu-lab/alpaca",
+)
+config = DatasetConfig(
+    data_type="text",
+    data_path="./chat.jsonl",
+    chat_format="alpaca",  # force alpaca format
+)
 ```
 
 ### Available Dataset Types

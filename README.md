@@ -232,11 +232,31 @@ Unified data API:
 ```python
 from selgis import create_dataloaders, DatasetConfig
 
-# Text (JSONL)
+# Text (JSONL) - auto-detects format by extension
 config = DatasetConfig(
     data_type="text",
-    data_path="./data.jsonl",
+    data_path="./data.jsonl",  # .jsonl, .json, .csv, .txt
     max_length=512,
+)
+
+# Chat datasets - auto-detects alpaca/sharegpt/messages
+config = DatasetConfig(
+    data_type="text",
+    data_path="./alpaca_data.jsonl",  # auto-detects: alpaca, sharegpt, messages
+)
+# or manually:
+config = DatasetConfig(
+    data_type="text",
+    data_path="./chat.jsonl",
+    chat_format="messages",
+    user_role="user",      # custom role (default)
+    assistant_role="assistant",
+)
+
+# HuggingFace datasets
+config = DatasetConfig(
+    data_type="text",
+    data_path="tatsu-lab/alpaca",  # auto-downloads from HF
 )
 
 # Image
