@@ -215,6 +215,13 @@ class DatasetConfig:
     world_size: int = 1
     rank: int = 0
 
+    # Chat format (auto-detect if None)
+    chat_format: str | None = None
+
+    # Custom chat roles (for messages format)
+    user_role: str = "user"
+    assistant_role: str = "assistant"
+
     # Additional parameters
     max_length: int = 512
     custom_kwargs: dict[str, Any] = field(default_factory=dict)

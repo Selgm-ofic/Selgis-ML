@@ -42,6 +42,9 @@ class TextDataset(Dataset):
         text_column: str = "text",
         pre_tokenize: bool = False,
         use_mmap: bool = True,
+        chat_format: str | None = None,
+        user_role: str = "user",
+        assistant_role: str = "assistant",
     ) -> None:
         super().__init__()
 
@@ -53,6 +56,9 @@ class TextDataset(Dataset):
         self.file_format = file_format
         self.text_column = text_column
         self.use_mmap = use_mmap and file_format == "jsonl"
+        self.chat_format = chat_format
+        self.user_role = user_role
+        self.assistant_role = assistant_role
 
         self._file = None  # type: ignore[assignment]
         self._mmap = None  # type: ignore[assignment]
@@ -197,7 +203,17 @@ class TextDataset(Dataset):
 
         record = self._load_record(idx)
 
-        text = record.get(self.text_column, record.get("text", ""))
+        # Auto-detect chat format if not specified
+        chat_format = self.chat_format
+        if chat_format is None:
+            chat_format = self._detect_chat_format(record)
+
+        # Apply chat format conversion
+        if chat_format and self.tokenizer:
+            text = self._format_chat(record, chat_format)
+        else:
+            text = record.get(self.text_column, record.get("text", ""))
+
         if self.format_fn:
             text = self.format_fn(text)
 
@@ -246,6 +262,66 @@ class TextDataset(Dataset):
             "avg_load_time_ms": sum(load_times) / len(load_times) if load_times else 0,
             "p95_load_time_ms": p95,
         }
+
+    def _detect_chat_format(self, record: dict) -> str | None:
+        """Auto-detect chat dataset format."""
+        keys = set(record.keys())
+
+        # Alpaca: instruction + input + output
+        if "instruction" in keys:
+            return "alpaca"
+
+        # ShareGPT: conversations array
+        if "conversations" in keys:
+            return "sharegpt"
+
+        # Messages format: messages array
+        if "messages" in keys:
+            return "messages"
+
+        return None
+
+    def _format_chat(self, record: dict, chat_format: str) -> str:
+        """Convert chat format to text for training."""
+        if chat_format == "alpaca":
+            instruction = record.get("instruction", "")
+            input_ = record.get("input", "")
+            output = record.get("output", "")
+
+            if input_:
+                text = f"Instruction: {instruction}\nInput: {input_}\nOutput: {output}"
+            else:
+                text = f"Instruction: {instruction}\nOutput: {output}"
+            return text
+
+        if chat_format == "sharegpt":
+            conversations = record.get("conversations", [])
+            parts = []
+            for msg in conversations:
+                role = msg.get("from", msg.get("role", ""))
+                value = msg.get("value", msg.get("content", ""))
+                if role == "human":
+                    parts.append(f"User: {value}")
+                else:
+                    parts.append(f"Assistant: {value}")
+            return "\n".join(parts)
+
+        if chat_format == "messages":
+            messages = record.get("messages", [])
+            parts = []
+            for msg in messages:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role == self.user_role:
+                    parts.append(f"User: {content}")
+                elif role == self.assistant_role:
+                    parts.append(f"Assistant: {content}")
+                elif role == "system":
+                    parts.append(f"System: {content}")
+            return "\n".join(parts)
+
+        # Default: return as text
+        return record.get(self.text_column, record.get("text", ""))
 
     def __del__(self) -> None:
         """Clean up resources."""

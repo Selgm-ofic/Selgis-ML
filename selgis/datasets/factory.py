@@ -103,6 +103,21 @@ def _create_text_dataset(config: DatasetConfig):
             format_fn=config.format_fn,
         )
 
+    # Auto-detect format from extension
+    file_format = config.custom_kwargs.get("file_format")
+    if file_format is None:
+        suffix = path_obj.suffix.lower()
+        if suffix == ".jsonl":
+            file_format = "jsonl"
+        elif suffix == ".json":
+            file_format = "json"
+        elif suffix == ".txt":
+            file_format = "txt"
+        elif suffix == ".csv":
+            file_format = "csv"
+        else:
+            file_format = "jsonl"  # default
+
     # Local file
     return TextDataset(
         data_path=data_path,
@@ -110,10 +125,13 @@ def _create_text_dataset(config: DatasetConfig):
         max_length=config.max_length,
         format_fn=config.format_fn,
         cache_dir=config.cache_dir if config.use_cache else None,
-        file_format=config.custom_kwargs.get("file_format", "jsonl"),
+        file_format=file_format,
         text_column=config.text_column,
         pre_tokenize=config.pre_tokenize,
         use_mmap=config.custom_kwargs.get("use_mmap", True),
+        chat_format=config.chat_format,
+        user_role=config.user_role,
+        assistant_role=config.assistant_role,
     )
 
 
