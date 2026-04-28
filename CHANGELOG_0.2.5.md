@@ -207,4 +207,73 @@ Thanks to the comprehensive code audits (BUGS_v2.md and AUDIT_SELGIS.md) that id
 
 ---
 
+## v0.2.5.1 (Post-Release Hotfix)
+
+**Release Date**: April 27, 2026
+**Type**: CI/Compatibility Fixes
+**Bugs Fixed**: 5
+
+### Fixed
+
+#### test_selgis.py - Windows Unicode Compatibility
+- Заменил Unicode символы на ASCII для Windows (cp1251/cp1252):
+  - `✓` → `V`
+  - `✗` → `X`
+  - `⚠` → `!`
+  - `→` → `->`
+- **File**: test_selgis.py
+
+#### selgis/scheduler.py - Python 3.8 Union Types
+- Добавил `from __future__ import annotations`
+- **File**: selgis/scheduler.py
+
+#### selgis/callbacks.py - Code Quality
+- Удалил дубликат функции `get_layer_sparsity`
+- Исправил indentation в `_compute_model_sparsity`
+- **File**: selgis/callbacks.py
+
+#### selgis/__init__.py - Import Order
+- Переместил импорты наверх файла (убрал E402)
+- Добавил lazy loading версии через `__getattr__`
+- **File**: selgis/__init__.py
+
+#### selgis/trainer.py - Ruff F823 False Positive
+- Добавил `_torch = torch` alias для static method
+- **File**: selgis/trainer.py
+
+#### selgis/datasets/image.py - Line Length
+- Разбил длинную строку p95_load_time_ms (E501)
+- **File**: selgis/datasets/image.py
+
+---
+
+### CI Status
+
+- **Ruff**: 0 errors ✅
+- **Tests**: 16/16 passing ✅
+- **Python**: 3.8+ compatible ✅
+- **Windows**: Unicode-safe ✅
+
+---
+
 **This is a critical stability release. All users should upgrade immediately.**
+
+---
+
+## Full Changelog: v0.2.5...v0.2.6
+
+### Added
+- Resume training from a checkpoint directory via `resume_from_checkpoint`.
+- Support for continuing training of existing LoRA adapters via `adapter_name_or_path`.
+- Lightweight LR finder mode switch `lr_finder_save_optimizer_state` (default False).
+- Periodic memory pressure controls in training loop: `gc_collect_steps`, `empty_cache_steps`.
+
+### Changed
+- Trainer now restores `model.pt`, `optimizer.pt`, `scheduler.pt`, and `metrics.json` metadata when resume is enabled.
+- Training starts from restored epoch/step counters after resume.
+- LR finder is auto-disabled when `resume_from_checkpoint` is set.
+- `TransformerConfig` validation now accepts either `peft_config` or `adapter_name_or_path` when `use_peft=True`.
+- API and README updated for new configuration fields and continuation workflows.
+
+### Fixed
+- Regression evaluation path no longer uses logits after it is freed.
