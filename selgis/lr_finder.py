@@ -256,7 +256,11 @@ class LRFinder:
             inputs, labels = unpack_batch(batch)
 
             if is_dict_like(inputs):
-                outputs = self.model(**dict(inputs))
+                inputs_dict = dict(inputs)
+                # For causal LM, include labels if available
+                if labels is not None:
+                    inputs_dict["labels"] = labels
+                outputs = self.model(**inputs_dict)
                 if hasattr(outputs, "loss") and outputs.loss is not None:
                     return outputs.loss
                 if self.criterion is None:
