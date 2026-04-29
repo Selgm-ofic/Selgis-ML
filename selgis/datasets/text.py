@@ -63,6 +63,7 @@ class TextDataset(Dataset):
         self._file = None  # type: ignore[assignment]
         self._mmap = None  # type: ignore[assignment]
         self._index: list = []
+        self._records: list = []  # type: ignore[assignment]
         self._tokenized_cache = None
 
         if not self.data_path.exists():
