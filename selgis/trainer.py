@@ -103,32 +103,24 @@ class Trainer:
             if problem_type == "causal_lm":
                 # Use custom forward_fn for causal LM
                 def causal_lm_forward(model, batch):
-                    from selgis.utils import move_to_device, is_dict_like, unpack_batch
                     import torch
+
+                    from selgis.utils import is_dict_like, move_to_device, unpack_batch
 
                     inputs, labels = unpack_batch(batch)
                     if is_dict_like(inputs):
                         inputs_dict = dict(inputs)
-                        
-                        # DEBUG: print batch keys
-                        print(f"[LR_FINDER_DEBUG] batch keys: {list(inputs_dict.keys())}")
 
                         # Handle case where dataset returns "text" instead of "input_ids"
                         if "input_ids" not in inputs_dict and "text" in inputs_dict:
-                            print("[LR_FINDER_DEBUG] 'text' key found, skipping")
                             return None, None
 
                         # Skip if input_ids is empty or None
                         input_ids = inputs_dict.get("input_ids")
-                        print(f"[LR_FINDER_DEBUG] input_ids type: {type(input_ids)}")
                         if input_ids is None:
-                            print("[LR_FINDER_DEBUG] input_ids is None, skipping")
                             return None, None
-                        if isinstance(input_ids, torch.Tensor):
-                            print(f"[LR_FINDER_DEBUG] input_ids shape: {input_ids.shape}, numel: {input_ids.numel()}")
-                            if input_ids.numel() == 0:
-                                print("[LR_FINDER_DEBUG] input_ids is empty, skipping")
-                                return None, None
+                        if isinstance(input_ids, torch.Tensor) and input_ids.numel() == 0:
+                            return None, None
 
                         if labels is not None:
                             inputs_dict["labels"] = labels
@@ -136,7 +128,6 @@ class Trainer:
                             inputs_dict = move_to_device(inputs_dict, self.device)
                         outputs = model(**inputs_dict)
                         return outputs.loss, outputs.logits if hasattr(outputs, "logits") else outputs.loss
-                    print("[LR_FINDER_DEBUG] batch not dict-like, skipping")
                     return None, None
 
                 lr_finder = LRFinder(
@@ -441,6 +432,11 @@ class Trainer:
 
         if is_dict_like(inputs):
             inputs_dict = dict(inputs)
+
+            # Handle case where dataset returns "text" instead of "input_ids"
+            if "input_ids" not in inputs_dict and "text" in inputs_dict:
+                raise ValueError("Dataset must return tokenized 'input_ids', not raw 'text'. Use data_type='text' with proper tokenizer.")
+
             if not self._has_device_map:
                 inputs_dict = move_to_device(inputs_dict, self.device)
 
