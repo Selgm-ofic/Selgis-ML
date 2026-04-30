@@ -81,16 +81,36 @@ trainer.train()
 ### LLM with LoRA
 
 ```python
-from selgis import TransformerTrainer, TransformerConfig
+from selgis import TransformerTrainer, TransformerConfig, DatasetConfig, create_dataloaders
+from transformers import AutoTokenizer
 
-config = TransformerConfig(
-    model_name_or_path="Qwen/Qwen2-0.5B",
-    use_peft=True,
-    peft_config={"r": 16, "target_modules": ["q_proj", "v_proj"]},
-    quantization_type="4bit",
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B")
+
+d_config = DatasetConfig(
+    data_type="text",
+    data_path="./data.jsonl",
+    chat_format="messages",
+    user_role="user",
+    assistant_role="assistant",
+    tokenizer=tokenizer,
+    batch_size=1,
 )
 
-trainer = TransformerTrainer("Qwen/Qwen2-0.5B", config=config)
+train_loader, eval_loader = create_dataloaders(d_config)
+
+config = TransformerConfig(
+    model_name_or_path="Qwen/Qwen2.5-0.5B",
+    use_peft=True,
+    peft_config={"r": 16},
+    lr_finder_enabled=True,
+)
+
+trainer = TransformerTrainer(
+    model_or_path="Qwen/Qwen2.5-0.5B",
+    config=config,
+    train_dataloader=train_loader,
+    tokenizer=tokenizer,
+)
 trainer.train()
 ```
 
