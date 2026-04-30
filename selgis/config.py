@@ -139,6 +139,10 @@ class TransformerConfig(SelgisConfig):
     Extends ``SelgisConfig`` with model loading, tokenizer, optimizer,
     PEFT/LoRA, gradient checkpointing, quantization, and device-map
     settings.
+
+    Note:
+        batch_size should be set in DatasetConfig, not TransformerConfig.
+        Use DatasetConfig(batch_size=...) for DataLoader batch size.
     """
 
     # === Model ===

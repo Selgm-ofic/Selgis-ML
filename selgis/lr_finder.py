@@ -172,6 +172,8 @@ class LRFinder:
         self._lrs = []
         smoothed_loss = 0.0
         best_loss = float("inf")
+        skipped_batches = 0
+        max_skipped = num_steps * 2  # Allow up to 2x skips
 
         data_iter = iter(train_loader)
 
@@ -184,7 +186,15 @@ class LRFinder:
 
             loss = self._compute_loss(batch, forward_fn)
 
-            if loss is None or torch.isnan(loss) or torch.isinf(loss):
+            # Skip batch if loss is None (e.g., wrong format)
+            if loss is None:
+                skipped_batches += 1
+                if skipped_batches >= max_skipped:
+                    print("[WARN] Too many invalid batches, stopping LR finder")
+                    break
+                continue
+
+            if torch.isnan(loss) or torch.isinf(loss):
                 print(f"[WARN] Loss exploded at LR={lr:.2e}")
                 break
 
