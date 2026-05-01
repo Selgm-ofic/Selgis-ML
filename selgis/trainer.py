@@ -2,12 +2,6 @@
 
 from __future__ import annotations
 
-# Import unsloth first if available (must be before transformers)
-try:
-    import unsloth
-except ImportError:
-    unsloth = None
-
 import gc
 import json
 import logging
