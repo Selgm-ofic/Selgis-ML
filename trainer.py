@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+# Import unsloth first if available (must be before transformers)
+try:
+    import unsloth
+except ImportError:
+    unsloth = None
+
 import gc
 import json
 import logging
@@ -103,8 +109,9 @@ class Trainer:
             if problem_type == "causal_lm":
                 # Use custom forward_fn for causal LM
                 def causal_lm_forward(model, batch):
-                    from selgis.utils import move_to_device, is_dict_like, unpack_batch
                     import torch
+
+                    from selgis.utils import is_dict_like, move_to_device, unpack_batch
 
                     inputs, labels = unpack_batch(batch)
                     if is_dict_like(inputs):
@@ -431,11 +438,11 @@ class Trainer:
 
         if is_dict_like(inputs):
             inputs_dict = dict(inputs)
-            
+
             # Handle case where dataset returns "text" instead of "input_ids"
             if "input_ids" not in inputs_dict and "text" in inputs_dict:
                 raise ValueError("Dataset must return tokenized 'input_ids', not raw 'text'. Use data_type='text' with proper tokenizer.")
-            
+
             if not self._has_device_map:
                 inputs_dict = move_to_device(inputs_dict, self.device)
 
@@ -626,12 +633,19 @@ class TransformerTrainer(Trainer):
     ) -> None:
         self._transformer_config = config
 
-        if isinstance(model_or_path, str):
+        use_unsloth = getattr(config, "use_unsloth", False)
+
+        # If using Unsloth, it will load the model itself - skip _load_model
+        if use_unsloth and isinstance(model_or_path, str):
+            model = None  # Will be loaded by _apply_unsloth
+        elif isinstance(model_or_path, str):
             model = self._load_model(model_or_path, config)
         else:
             model = model_or_path
 
-        if tokenizer is None and isinstance(model_or_path, str):
+        if tokenizer is None and use_unsloth:
+            tokenizer = None  # Unsloth returns its own tokenizer
+        elif tokenizer is None and isinstance(model_or_path, str):
             tokenizer = self._try_load_tokenizer(model_or_path, config)
 
         if tokenizer is not None:
@@ -647,7 +661,9 @@ class TransformerTrainer(Trainer):
 
         # ── Unsloth ──────────────────────────────────────────────────
         if getattr(config, "use_unsloth", False):
-            model = self._apply_unsloth(model, config)
+            if not model_or_path:
+                model = self._load_model(model_or_path, config)
+            model = self._apply_unsloth(model, config, model_or_path)
 
         # ── PEFT / Gradient Checkpointing ────────────────────────────────
         if config.use_peft and (config.peft_config or config.adapter_name_or_path):
@@ -968,6 +984,11 @@ class TransformerTrainer(Trainer):
             print(f"[INFO] No tokenizer provided — pad_token_id set to eos_token_id ({eos_id})")
 
     def _load_model(self, path: str, config: TransformerConfig) -> nn.Module:
+        # Clean memory before loading large model
+        import torch
+        torch.cuda.empty_cache()
+        gc.collect()
+
         try:
             from transformers import (
                 AutoModelForCausalLM,
@@ -1140,6 +1161,7 @@ class TransformerTrainer(Trainer):
         self,
         model: nn.Module,
         config: TransformerConfig,
+        model_or_path: str = "",
     ) -> nn.Module:
         """Apply Unsloth for faster training.
 
@@ -1147,8 +1169,9 @@ class TransformerTrainer(Trainer):
         Works with Llama, Qwen, Mistral, Phi, Gemma, Gemma 4.
 
         Args:
-            model: The model to optimize.
+            model: The model to optimize (may be unused if model_or_path provided).
             config: Configuration with Unsloth settings.
+            model_or_path: Model path for Unsloth loading.
 
         Returns:
             Model wrapped with Unsloth if available.
