@@ -223,6 +223,11 @@ class LRFinder:
         self._restore_state()
         self._free_saved_state()
 
+        # Clean up memory after LR finder
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         optimal_lr = self._compute_optimal_lr(
             self._lrs,
             self._losses,
