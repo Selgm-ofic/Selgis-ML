@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7.1] - 2026-05-01
+
+### Fixed
+
+- **Unsloth double loading** - Fixed bug where model was loaded twice when use_unsloth=True (once via transformers, once via Unsloth). Now skips _load_model when using Unsloth.
+- **LR Finder for Causal LM** - Fixed ValueError "You must specify exactly one of input_ids or inputs_embeds" when using LR finder with causal language models
+- **Tokenized batch handling** - Dataset now properly returns tokenized input_ids when tokenizer is provided to DatasetConfig
+- **Batch size configuration** - Fixed issue where batch_size in TransformerConfig wasn't properly passed to DatasetConfig
+
+### Fixed
+
+- **LR Finder for Causal LM** - Fixed ValueError "You must specify exactly one of input_ids or inputs_embeds" when using LR finder with causal language models
+- **Tokenized batch handling** - Dataset now properly returns tokenized input_ids when tokenizer is provided to DatasetConfig
+- **Batch size configuration** - Fixed issue where batch_size in TransformerConfig wasn't properly passed to DatasetConfig
+
+### Added
+
+- Custom `causal_lm_forward` function for LR finder that properly handles batch format with input_ids/attention_mask/labels
+- Validation in `_forward()` method to provide clearer error message when dataset returns raw text instead of tokenized input_ids
+- Memory cleanup before model loading (gc.collect + empty_cache)
+- Memory cleanup after LR finder (gc.collect + empty_cache)
+- Import unsloth at module top level to avoid warnings about import order
+- `empty_cache_steps` config option for periodic GPU memory cleanup during training
+
+### Changed
+
+- Improved error messages for better debugging of dataset/tokenizer issues
+- `selgis/__init__.py`: version updated to 0.2.7.1
+- `TransformerConfig`: Added doc note that batch_size should be set in DatasetConfig
+
 ## [0.2.7] - 2026-04-30
 
 ### Fixed
@@ -19,9 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Custom `causal_lm_forward` function for LR finder that properly handles batch format with input_ids/attention_mask/labels
 - Validation in `_forward()` method to provide clearer error message when dataset returns raw text instead of tokenized input_ids
-- Debug logging in LR finder to help diagnose batch format issues
+- Memory cleanup before model loading (gc.collect + empty_cache)
+- Memory cleanup after LR finder (gc.collect + empty_cache)
+- Import unsloth at module top level to avoid warnings about import order
+- `empty_cache_steps` config option for periodic GPU memory cleanup during training
 
 ### Changed
+
+- Improved error messages for better debugging of dataset/tokenizer issues
+- `selgis/__init__.py`: version updated to 0.2.7
+- `TransformerConfig`: Added doc note that batch_size should be set in DatasetConfig
 
 - Improved error messages for better debugging of dataset/tokenizer issues
 - `selgis/__init__.py`: version updated to 0.2.7
