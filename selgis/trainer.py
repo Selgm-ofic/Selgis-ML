@@ -443,6 +443,12 @@ class Trainer:
             if "input_ids" not in inputs_dict and "text" in inputs_dict:
                 raise ValueError("Dataset must return tokenized 'input_ids', not raw 'text'. Use data_type='text' with proper tokenizer.")
 
+            # Add token_type_ids if missing (required by some models like Gemma3)
+            if "token_type_ids" not in inputs_dict:
+                input_ids = inputs_dict.get("input_ids")
+                if input_ids is not None:
+                    inputs_dict["token_type_ids"] = torch.zeros_like(input_ids)
+
             if not self._has_device_map:
                 inputs_dict = move_to_device(inputs_dict, self.device)
 
@@ -833,6 +839,12 @@ class TransformerTrainer(Trainer):
 
         # Build model inputs WITHOUT labels so model doesn't compute CE
         model_inputs = {k: v for k, v in inputs_dict.items() if k != "labels"}
+
+        # Add token_type_ids if missing (required by some models like Gemma3)
+        if "token_type_ids" not in model_inputs:
+            input_ids = model_inputs.get("input_ids")
+            if input_ids is not None:
+                model_inputs["token_type_ids"] = torch.zeros_like(input_ids)
 
         if not self._has_device_map:
             model_inputs = move_to_device(model_inputs, self.device)
