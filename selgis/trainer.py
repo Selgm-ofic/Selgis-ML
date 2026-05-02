@@ -122,6 +122,12 @@ class Trainer:
                         if isinstance(input_ids, torch.Tensor) and input_ids.numel() == 0:
                             return None, None
 
+                        # Add token_type_ids if missing (required by some models like Gemma3)
+                        if "token_type_ids" not in inputs_dict:
+                            # Create zeros if not provided
+                            if input_ids is not None:
+                                inputs_dict["token_type_ids"] = torch.zeros_like(input_ids)
+
                         if labels is not None:
                             inputs_dict["labels"] = labels
                         if not self._has_device_map:
@@ -654,13 +660,21 @@ class TransformerTrainer(Trainer):
             self._try_enable_flash_attention()
 
         # ── Unsloth ──────────────────────────────────────────────────
-        if getattr(config, "use_unsloth", False):
-            if not model_or_path:
-                model = self._load_model(model_or_path, config)
+        use_unsloth = getattr(config, "use_unsloth", False)
+        unsloth_applied_peft = False  # Track if Unsloth already applied PEFT
+
+        if use_unsloth:
             model = self._apply_unsloth(model, config, model_or_path)
+            # Check if Unsloth already applied PEFT (it does if peft_config provided)
+            unsloth_applied_peft = (
+                use_unsloth
+                and getattr(config, "use_peft", False)
+                and config.peft_config
+            )
 
         # ── PEFT / Gradient Checkpointing ────────────────────────────────
-        if config.use_peft and (config.peft_config or config.adapter_name_or_path):
+        # Skip if Unsloth already applied PEFT
+        if config.use_peft and not unsloth_applied_peft and (config.peft_config or config.adapter_name_or_path):
             model = self._apply_peft(
                 model,
                 config.peft_config,
