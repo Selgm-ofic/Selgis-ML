@@ -314,7 +314,7 @@ class Trainer:
 
             train_loss = self._train_epoch()
             metrics = {"train_loss": train_loss}
-            
+
             lr = self.optimizer.param_groups[0]["lr"] if self.optimizer and self.optimizer.param_groups else 0
             logger.info("Epoch %d  train_loss=%.4f  lr=%.2e", epoch, train_loss, lr)
 
@@ -379,7 +379,7 @@ class Trainer:
             self._call_callbacks("on_step_begin", step=self._global_step)
 
             loss = self._training_step(batch)
-            
+
             if batch_idx == 0:
                 logger.debug("batch_idx=%d, loss returned=%s", batch_idx, loss)
 
@@ -388,7 +388,7 @@ class Trainer:
                 total_loss += loss_val
                 num_steps += 1
                 accum_count += 1
-                
+
                 if self._global_step % log_steps == 0:
                     lr = self.optimizer.param_groups[0]["lr"] if self.optimizer.param_groups else 0
                     logger.info("[METRIC] step=%d epoch=%d loss=%.4f lr=%.2e", self._global_step, self._current_epoch, loss_val, lr)
@@ -814,8 +814,6 @@ class TransformerTrainer(Trainer):
             return
 
         try:
-            import torch.backends.cuda  # noqa: F401 (side-effect import)
-
             sm_major, sm_minor = torch.cuda.get_device_capability()
 
             if sm_major >= 8:
@@ -1022,7 +1020,7 @@ class TransformerTrainer(Trainer):
             perplexity = float("inf")
 
         logger.info("Eval_loss=%.4f perplexity=%.4f", avg_loss, perplexity)
-        
+
         metrics: dict[str, float] = {
             "loss": avg_loss,
             "perplexity": perplexity,

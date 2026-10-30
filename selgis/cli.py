@@ -11,7 +11,6 @@ Usage::
 
 import argparse
 import logging
-import subprocess
 import sys
 from dataclasses import fields
 from pathlib import Path
@@ -88,7 +87,6 @@ def _get_dataset_keys() -> set:
 
 def _build_config(raw: dict, overrides: list[str] | None = None):
     from selgis import SelgisConfig, TransformerConfig
-    from selgis.datasets import DatasetConfig
 
     if overrides:
         for override in overrides:
@@ -192,8 +190,6 @@ def _try_load_tokenizer(config):
 
 
 def _cmd_config(args: argparse.Namespace) -> int:
-    from selgis import SelgisConfig, TransformerConfig
-    from selgis.datasets import DatasetConfig
 
     if args.config_action == "validate":
         if not getattr(args, "config", None):
@@ -293,6 +289,7 @@ def _train_transformer(config, train_loader, eval_loader) -> int:
 
 def _train_pytorch(config, train_loader, eval_loader) -> int:
     import torch.nn as nn
+
     from selgis import Trainer
 
     try:
@@ -340,6 +337,7 @@ def _train_demo() -> int:
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
+
     from selgis import SelgisConfig, Trainer
     from selgis.utils import seed_everything
 
