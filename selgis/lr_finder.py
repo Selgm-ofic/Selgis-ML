@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from selgis.utils import is_dict_like, move_to_device, unpack_batch
+from selgis.utils import call_model_with_dict_inputs, is_dict_like, move_to_device, unpack_batch
 
 
 class LRFinder:
@@ -65,6 +65,12 @@ class LRFinder:
             self._trainable_names = {n for n, p in model.named_parameters() if p.requires_grad}
 
         self._initial_state = self._clone_state()
+        # Buffers (e.g. BatchNorm running stats) are mutated by the sweep
+        # and must be restored too, even in trainable_only mode.
+        self._initial_buffers = {
+            name: buf.detach().clone()
+            for name, buf in self.model.named_buffers()
+        }
         self._initial_optim_state = None
         self._initial_lrs = [pg["lr"] for pg in optimizer.param_groups]
         if self.save_optimizer_state:
@@ -106,8 +112,20 @@ class LRFinder:
         """Restore initial model and optimizer state."""
         with torch.no_grad():
             for name, param in self.model.named_parameters():
+                if self._trainable_names is not None and name not in self._trainable_names:
+                    continue
                 if name in self._initial_state:
-                    param.data.copy_(self._initial_state[name])
+                    saved = self._initial_state[name]
+                    if saved.device != param.device:
+                        saved = saved.to(param.device)
+                    param.data.copy_(saved)
+
+            for name, buf in self.model.named_buffers():
+                saved = self._initial_buffers.get(name)
+                if saved is not None:
+                    if saved.device != buf.device:
+                        saved = saved.to(buf.device)
+                    buf.copy_(saved)
 
         if self._initial_optim_state is not None:
             self.optimizer.load_state_dict(self._initial_optim_state)
@@ -119,6 +137,9 @@ class LRFinder:
     def _get_amp_context(self) -> AbstractContextManager:
         """Return autocast context matching training configuration."""
         if self.amp_dtype is None:
+            return nullcontext()
+        if self.amp_dtype == torch.float16 and self.device.type == "cpu":
+            # autocast CPU does not support float16
             return nullcontext()
         if self.device.type == "cuda":
             return torch.amp.autocast("cuda", dtype=self.amp_dtype)
@@ -141,6 +162,7 @@ class LRFinder:
         num_steps: int = 100,
         smooth_f: float = 0.05,
         diverge_th: float = 4.0,
+        log_steps: int = 10,
     ) -> float:
         """Run LR sweep and return the suggested learning rate.
 
@@ -153,6 +175,7 @@ class LRFinder:
             smooth_f: Exponential smoothing factor for loss.
             diverge_th: Stop if smoothed loss exceeds
                 ``diverge_th * best_loss``.
+            log_steps: Log progress every N steps.
 
         Returns:
             Suggested optimal learning rate.
@@ -161,7 +184,7 @@ class LRFinder:
             print("[WARN] num_steps must be positive, using default LR")
             return start_lr
 
-        print("\n[INFO] Searching for optimal LR...")
+        print("\n[INFO] Searching for optimal LR...", flush=True)
 
         mult = (end_lr / start_lr) ** (1.0 / num_steps)
         lr = start_lr
@@ -190,15 +213,16 @@ class LRFinder:
             if loss is None:
                 skipped_batches += 1
                 if skipped_batches >= max_skipped:
-                    print("[WARN] Too many invalid batches, stopping LR finder")
+                    print("[WARN] Too many invalid batches, stopping LR finder", flush=True)
                     break
                 continue
 
-            if torch.isnan(loss) or torch.isinf(loss):
-                print(f"[WARN] Loss exploded at LR={lr:.2e}")
+            if torch.isnan(loss).any() or torch.isinf(loss).any():
+                print(f"[WARN] Loss exploded at LR={lr:.2e}", flush=True)
                 break
 
             loss_val = loss.item()
+
             smoothed_loss = (
                 loss_val if step == 0 else smooth_f * loss_val + (1 - smooth_f) * smoothed_loss
             )
@@ -210,7 +234,11 @@ class LRFinder:
                 best_loss = smoothed_loss
 
             if smoothed_loss > diverge_th * best_loss:
+                print(f"[INFO] LR finder diverged at step {step+1}/{num_steps}, stopping early", flush=True)
                 break
+
+            if step % log_steps == 0 or step == num_steps - 1:
+                print(f"[INFO] LR finder step {step+1}/{num_steps}, LR={lr:.2e}, loss={loss_val:.4f}", flush=True)
 
             self.optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -232,13 +260,14 @@ class LRFinder:
             self._lrs,
             self._losses,
         )
-        print(f"[INFO] Found optimal LR: {optimal_lr:.2e}")
+        print(f"[INFO] Found optimal LR: {optimal_lr:.2e}", flush=True)
 
         return optimal_lr
 
     def _free_saved_state(self) -> None:
         """Release saved state tensors to free memory."""
         self._initial_state = {}
+        self._initial_buffers = {}
         self._initial_optim_state = None
         self._lrs = []
         self._losses = []
@@ -251,17 +280,7 @@ class LRFinder:
         batch: Any,
         forward_fn: Callable | None,
     ) -> torch.Tensor | None:
-        """Compute loss for one batch.
-
-        Args:
-            batch: Raw batch from the data loader.
-            forward_fn: Optional custom forward function.
-
-        Returns:
-            Loss tensor, or ``None`` on failure.
-        """
-        if not self._has_device_map:
-            batch = move_to_device(batch, self.device)
+        batch = move_to_device(batch, self.device)
 
         with self._get_amp_context():
             if forward_fn is not None:
@@ -272,16 +291,34 @@ class LRFinder:
 
             if is_dict_like(inputs):
                 inputs_dict = dict(inputs)
+                if self._has_device_map:
+                    inputs_dict = move_to_device(inputs_dict, 'cuda')
+                    if labels is not None:
+                        labels = move_to_device(labels, 'cuda')
+
+                if "input_ids" not in inputs_dict:
+                    # Generic model with a dict batch (e.g. "inputs" key),
+                    # not an LLM: run the model and apply the criterion.
+                    if "text" in inputs_dict:
+                        raise ValueError("Need tokenizer to process text input")
+                    if labels is not None:
+                        model_inputs = {
+                            k: v for k, v in inputs_dict.items()
+                            if k not in ("labels", "label")
+                        }
+                        outputs = call_model_with_dict_inputs(self.model, model_inputs)
+                    else:
+                        outputs = self.model(**inputs_dict)
+                    if hasattr(outputs, "loss") and outputs.loss is not None:
+                        return outputs.loss
+                    if self.criterion is None:
+                        raise ValueError("Model doesn't return loss, criterion required")
+                    logits = outputs.logits if hasattr(outputs, "logits") else outputs
+                    return self.criterion(logits, labels)
+
                 # For causal LM, include labels if available
                 if labels is not None:
                     inputs_dict["labels"] = labels
-                # Ensure input_ids exists
-                if "input_ids" not in inputs_dict:
-                    if "text" in inputs_dict:
-                        # Try tokenizing if tokenizer available
-                        if self.criterion is not None and hasattr(self.criterion, "tokenizer"):
-                            raise ValueError("Need tokenizer to process text input")
-                    raise ValueError("batch must contain input_ids for LLM training")
                 outputs = self.model(**inputs_dict)
                 if hasattr(outputs, "loss") and outputs.loss is not None:
                     return outputs.loss
@@ -290,9 +327,15 @@ class LRFinder:
                 logits = outputs.logits if hasattr(outputs, "logits") else outputs
                 return self.criterion(logits, labels)
 
+            if self._has_device_map:
+                inputs = move_to_device(inputs, 'cuda')
+                if labels is not None:
+                    labels = move_to_device(labels, 'cuda')
             outputs = self.model(inputs)
             if self.criterion is None:
                 raise ValueError("Criterion required for tensor input")
+            if self._has_device_map and hasattr(outputs, 'device'):
+                outputs = outputs.to(self.device)
             return self.criterion(outputs, labels)
 
     def _set_lr(self, lr: float) -> None:

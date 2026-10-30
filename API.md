@@ -1,6 +1,6 @@
 # Selgis ML API Documentation
 
-**Version:** 0.2.6
+**Version:** 0.2.8
 **Description:** Universal Training Framework for PyTorch and HuggingFace Transformers
 
 ---
@@ -381,7 +381,6 @@ config = DatasetConfig(
 - `multimodal` - Text + image
 - `streaming` - Large file streaming
 - `custom` - Wrap any PyTorch Dataset
-- `tabular` - CSV/JSON tabular
 
 ### create_dataset
 

@@ -44,6 +44,7 @@ class SelgisConfig:
     lr_finder_start: float = 1e-7
     lr_finder_end: float = 1.0
     lr_finder_steps: int = 100
+    lr_finder_log_steps: int = 10
 
     # === Scheduler ===
     warmup_epochs: int = 0
@@ -244,4 +245,5 @@ class TransformerConfig(SelgisConfig):
             )
 
         if self.use_unsloth and not self.use_peft:
-            print("[WARN] use_unsloth=True without use_peft=True. Applying Unsloth only.")
+            import warnings
+            warnings.warn("use_unsloth=True without use_peft=True. Applying Unsloth only.")

@@ -2,28 +2,32 @@
 
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class ChunkedCrossEntropyLoss(nn.Module):
     """Memory-efficient Cross-Entropy with vocabulary chunking.
 
-    Splits the VOCABULARY axis into chunks to reduce peak memory usage
-    during the backward pass. For large vocabularies (50K+ tokens),
-    chunked backward saves several GB of VRAM compared to computing
-    softmax over the full [B, T, V] tensor at once.
+    Splits the VOCABULARY axis into chunks to reduce peak memory usage.
+    For large vocabularies (50K+ tokens), chunked backward saves
+    several GB of VRAM compared to computing softmax over the full
+    [B, T, V] tensor at once.
 
-    Algorithm (2-pass, numerically stable):
-        Pass 1 — compute global logsumexp in chunks (no large intermediates).
-        Pass 2 — gather target logits, compute CE = -(target - log_Z).
+    Algorithm:
+        Pass 1 (no grad) — global max over the vocabulary, chunk by chunk.
+        Pass 2 — per-chunk quantities (sum of exponentials, target logit,
+        logit sum) computed inside ``torch.utils.checkpoint`` blocks.
+        Nothing chunk-sized is stored for backward; each chunk is
+        recomputed chunk-by-chunk during the backward pass, so peak
+        memory stays proportional to ``chunk_size``.
 
-    Note: ``logits [B, T, V]`` must still fit in memory. The gain is
-    during the backward pass where chunk-wise exp gradients are computed
-    one chunk at a time instead of all at once.
+    Label smoothing follows the PyTorch definition:
+        loss = (1 - ε) * CE_hard + (ε / V) * Σ_i(-log p_i)
+    The uniform term is ``log_z - mean(x)`` and carries gradient,
+    matching ``F.cross_entropy(label_smoothing=ε)`` exactly.
 
     Args:
         chunk_size: Vocabulary chunk size. Default 1024.
@@ -101,39 +105,124 @@ class ChunkedCrossEntropyLoss(nn.Module):
     # Internal helpers
     # ──────────────────────────────────────────────────────────────────────
 
-    def _compute_log_z(
+    def _chunk_bounds(self, vocab_size: int):
+        for start in range(0, vocab_size, self.chunk_size):
+            yield start, min(start + self.chunk_size, vocab_size)
+
+    def _compute_global_max(
         self,
         logits: torch.Tensor,
         vocab_size: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute global max and logsumexp in one chunk-wise sweep.
+    ) -> torch.Tensor:
+        """Compute the global vocabulary max, chunk by chunk (no grad).
 
         Returns:
-            Tuple ``(global_max, log_z)`` both of shape ``[B, T]``.
+            ``[B, T]`` float32 tensor, detached.
         """
-        # Pass 1 — global max (cheap; needed for numerical stability)
         global_max = torch.full(
             logits.shape[:2],
             float("-inf"),
             device=logits.device,
+            dtype=torch.float32,
+        )
+        with torch.no_grad():
+            for start, end in self._chunk_bounds(vocab_size):
+                chunk_max = logits[:, :, start:end].max(dim=-1).values
+                global_max = torch.maximum(global_max, chunk_max.float())
+        return global_max.detach()
+
+    def _sum_exp(
+        self,
+        logits: torch.Tensor,
+        global_max: torch.Tensor,
+        vocab_size: int,
+    ) -> torch.Tensor:
+        """Accumulate Σ exp(x - max) chunk by chunk (checkpointed).
+
+        Returns:
+            ``[B, T]`` float32 tensor with gradients through every chunk.
+        """
+        grad_enabled = torch.is_grad_enabled()
+
+        def chunk_fn(chunk: torch.Tensor) -> torch.Tensor:
+            return (chunk.float() - global_max.unsqueeze(-1)).exp().sum(dim=-1)
+
+        total = None
+        for start, end in self._chunk_bounds(vocab_size):
+            chunk = logits[:, :, start:end]
+            if grad_enabled:
+                part = checkpoint(chunk_fn, chunk, use_reentrant=False)
+            else:
+                with torch.no_grad():
+                    part = chunk_fn(chunk)
+            total = part if total is None else total + part
+        return total
+
+    def _sum_logits(
+        self,
+        logits: torch.Tensor,
+        vocab_size: int,
+    ) -> torch.Tensor:
+        """Accumulate Σ x over the vocabulary chunk by chunk (checkpointed).
+
+        Used by label smoothing; ``Σ_i(-log p_i) = V·log_z - Σ x``.
+        """
+        grad_enabled = torch.is_grad_enabled()
+
+        def chunk_fn(chunk: torch.Tensor) -> torch.Tensor:
+            return chunk.float().sum(dim=-1)
+
+        total = None
+        for start, end in self._chunk_bounds(vocab_size):
+            chunk = logits[:, :, start:end]
+            if grad_enabled:
+                part = checkpoint(chunk_fn, chunk, use_reentrant=False)
+            else:
+                with torch.no_grad():
+                    part = chunk_fn(chunk)
+            total = part if total is None else total + part
+        return total
+
+    def _gather_target_logits(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        vocab_size: int,
+    ) -> torch.Tensor:
+        """Gather target logits chunk by chunk (checkpointed).
+
+        Each chunk only gathers indices that fall inside it, so the
+        gather backward never materialises a full ``[B, T, V]`` gradient.
+
+        Returns:
+            ``[B, T]`` tensor of target logits.
+        """
+        grad_enabled = torch.is_grad_enabled()
+        result = torch.zeros(
+            targets.shape,
+            device=logits.device,
             dtype=logits.dtype,
         )
-        for start in range(0, vocab_size, self.chunk_size):
-            end = min(start + self.chunk_size, vocab_size)
-            chunk_max = logits[:, :, start:end].max(dim=-1).values
-            global_max = torch.maximum(global_max, chunk_max)
-        global_max = global_max.detach()  # don't diff through max
 
-        # Pass 2 — accumulate exp(x - max) in chunks
-        sum_exp = torch.zeros_like(global_max)
-        for start in range(0, vocab_size, self.chunk_size):
-            end = min(start + self.chunk_size, vocab_size)
-            chunk = logits[:, :, start:end] - global_max.unsqueeze(-1)
-            sum_exp = sum_exp + chunk.exp().sum(dim=-1)
-            # chunk is freed here — only [B, T] sum_exp stays alive
+        for start, end in self._chunk_bounds(vocab_size):
+            in_chunk = (targets >= start) & (targets < end)
+            if not in_chunk.any():
+                continue
 
-        log_z = global_max + sum_exp.log()  # [B, T]
-        return global_max, log_z
+            # NOTE: ``start`` is bound as a default argument so the closure
+            # keeps its per-iteration value at checkpoint-recompute time.
+            def chunk_fn(chunk: torch.Tensor, start: int = start) -> torch.Tensor:
+                local_idx = (targets - start).clamp(0, chunk.shape[-1] - 1)
+                return chunk.gather(dim=-1, index=local_idx.unsqueeze(-1)).squeeze(-1)
+
+            chunk = logits[:, :, start:end]
+            if grad_enabled:
+                vals = checkpoint(chunk_fn, chunk, use_reentrant=False)
+            else:
+                with torch.no_grad():
+                    vals = chunk_fn(chunk)
+            result = result + vals * in_chunk.to(logits.dtype)
+        return result
 
     def _forward_chunked(
         self,
@@ -143,18 +232,17 @@ class ChunkedCrossEntropyLoss(nn.Module):
     ) -> torch.Tensor:
         """Hard-target chunked CE (no label smoothing)."""
         valid_mask = targets != self.ignore_index  # [B, T]
-        safe_targets = targets.clamp(min=0)  # avoid OOB gather on ignore_index
 
-        _, log_z = self._compute_log_z(logits, vocab_size)
+        global_max = self._compute_global_max(logits, vocab_size)
+        sum_exp = self._sum_exp(logits, global_max, vocab_size)
+        log_z = global_max + sum_exp.log()  # [B, T]
 
-        # Gather target logit: logits[b, t, targets[b, t]]
-        target_logits = logits.gather(
-            dim=-1,
-            index=safe_targets.unsqueeze(-1),
-        ).squeeze(-1)  # [B, T]
+        target_logits = self._gather_target_logits(
+            logits, targets.clamp(min=0), vocab_size
+        )
 
         # CE = -(target_logit - log_z)
-        per_token_loss = -(target_logits - log_z) * valid_mask.float()
+        per_token_loss = (log_z - target_logits) * valid_mask.to(logits.dtype)
 
         return self._reduce(per_token_loss, valid_mask)
 
@@ -166,29 +254,29 @@ class ChunkedCrossEntropyLoss(nn.Module):
     ) -> torch.Tensor:
         """Label-smoothed chunked CE.
 
-        Smoothing formula:
-            loss = (1 - ε) * CE_hard + ε * CE_uniform
-        where CE_uniform = log(vocab_size) (constant; uniform distribution).
+        Smoothing formula (identical to ``F.cross_entropy``):
+            loss = (1 - ε) * CE_hard + (ε / V) * Σ_i(-log p_i)
+        where Σ_i(-log p_i) = V·log_z - Σ x, so the uniform term
+        carries gradient through every logit.
         """
         valid_mask = targets != self.ignore_index
-        safe_targets = targets.clamp(min=0)
 
-        _, log_z = self._compute_log_z(logits, vocab_size)
+        global_max = self._compute_global_max(logits, vocab_size)
+        sum_exp = self._sum_exp(logits, global_max, vocab_size)
+        log_z = global_max + sum_exp.log()  # [B, T]
 
-        target_logits = logits.gather(
-            dim=-1,
-            index=safe_targets.unsqueeze(-1),
-        ).squeeze(-1)
+        target_logits = self._gather_target_logits(
+            logits, targets.clamp(min=0), vocab_size
+        )
+        sum_x = self._sum_logits(logits, vocab_size)  # [B, T]
 
-        hard_ce = -(target_logits - log_z)  # [B, T]
-
-        # CE against uniform = -log(1/V) = log(V)
-        uniform_ce = math.log(vocab_size)
+        hard_ce = log_z - target_logits  # [B, T]
+        uniform_ce = log_z - sum_x / vocab_size  # [B, T]
 
         per_token_loss = (
             (1.0 - self.label_smoothing) * hard_ce
             + self.label_smoothing * uniform_ce
-        ) * valid_mask.float()
+        ) * valid_mask.to(logits.dtype)
 
         return self._reduce(per_token_loss, valid_mask)
 

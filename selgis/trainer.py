@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import inspect
 import json
 import logging
 import math
@@ -29,6 +30,7 @@ from selgis.loss import CrossEntropyLossV2
 from selgis.lr_finder import LRFinder
 from selgis.scheduler import SmartScheduler
 from selgis.utils import (
+    call_model_with_dict_inputs,
     get_device,
     get_optimizer_grouped_params,
     is_dict_like,
@@ -39,8 +41,42 @@ from selgis.utils import (
 
 logger = logging.getLogger(__name__)
 
-# Workaround for ruff F823 false positive in static methods
-_torch = torch
+# Metrics where a LOWER value is better; everything else is treated as
+# "higher is better" when used as ``primary_metric``.
+LOWER_IS_BETTER_METRICS = frozenset(
+    {"loss", "perplexity", "ppl", "mse", "mae", "rmse", "mape", "smape", "wer", "cer"}
+)
+
+
+def _accepts_token_type_ids(model: nn.Module) -> bool:
+    """Return True if *model*'s forward accepts ``token_type_ids``.
+
+    Models like Llama/Mistral/Qwen have no ``token_type_ids`` input and
+    raise ``TypeError`` if it is passed, so it must only be injected
+    when the model actually supports it.
+    """
+    try:
+        params = inspect.signature(model.forward).parameters
+    except (TypeError, ValueError):
+        return False
+    if "token_type_ids" in params:
+        return True
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        # **kwargs-style forward: use the config as a hint
+        cfg = getattr(model, "config", None)
+        return bool(getattr(cfg, "type_vocab_size", 0))
+    return False
+
+
+def _add_token_type_ids(inputs_dict: dict, model: nn.Module) -> None:
+    """Add zero ``token_type_ids`` to *inputs_dict* if missing and supported."""
+    if "token_type_ids" in inputs_dict:
+        return
+    input_ids = inputs_dict.get("input_ids")
+    if input_ids is not None and _accepts_token_type_ids(model):
+        inputs_dict["token_type_ids"] = torch.zeros_like(input_ids)
+
+
 
 
 class Trainer:
@@ -98,88 +134,65 @@ class Trainer:
             amp_dtype = torch.bfloat16
 
         if config.lr_finder_enabled and not getattr(config, "resume_from_checkpoint", None):
-            # Check if problem type supports LR finder
             problem_type = getattr(config, "problem_type", "")
+
             if problem_type == "causal_lm":
-                # Use custom forward_fn for causal LM
                 def causal_lm_forward(model, batch):
-                    import torch
-
-                    from selgis.utils import is_dict_like, move_to_device, unpack_batch
-
                     inputs, labels = unpack_batch(batch)
                     if is_dict_like(inputs):
                         inputs_dict = dict(inputs)
-
-                        # Handle case where dataset returns "text" instead of "input_ids"
                         if "input_ids" not in inputs_dict and "text" in inputs_dict:
                             return None, None
-
-                        # Skip if input_ids is empty or None
                         input_ids = inputs_dict.get("input_ids")
                         if input_ids is None:
                             return None, None
                         if isinstance(input_ids, torch.Tensor) and input_ids.numel() == 0:
                             return None, None
-
-                        # Add token_type_ids if missing (required by some models like Gemma3)
-                        if "token_type_ids" not in inputs_dict:
-                            # Create zeros if not provided
-                            if input_ids is not None:
-                                inputs_dict["token_type_ids"] = torch.zeros_like(input_ids)
-
+                        _add_token_type_ids(inputs_dict, model)
+                        if "attention_mask" not in inputs_dict:
+                            inputs_dict["attention_mask"] = torch.ones_like(input_ids)
                         if labels is not None:
                             inputs_dict["labels"] = labels
-                        if not self._has_device_map:
-                            inputs_dict = move_to_device(inputs_dict, self.device)
+                        inputs_dict = move_to_device(inputs_dict, self.device)
                         outputs = model(**inputs_dict)
                         return outputs.loss, outputs.logits if hasattr(outputs, "logits") else outputs.loss
                     return None, None
 
-                lr_finder = LRFinder(
-                    model,
-                    optimizer,
-                    criterion=None,
-                    device=self.device,
-                    trainable_only=config.lr_finder_trainable_only,
-                    amp_dtype=amp_dtype,
-                    save_optimizer_state=config.lr_finder_save_optimizer_state,
-                )
-                self.initial_lr = lr_finder.find(
-                    train_dataloader,
-                    forward_fn=causal_lm_forward,
-                    start_lr=config.lr_finder_start,
-                    end_lr=config.lr_finder_end,
-                    num_steps=config.lr_finder_steps,
-                )
-                for pg in self.optimizer.param_groups:
-                    pg["lr"] = self.initial_lr
-                logger.info("LR finder found optimal LR: %.2e", self.initial_lr)
+                finder_forward = causal_lm_forward
+                finder_criterion = None
             else:
-                lr_finder = LRFinder(
-                    model,
-                    optimizer,
-                    criterion=criterion,
-                    device=self.device,
-                    trainable_only=config.lr_finder_trainable_only,
-                    amp_dtype=amp_dtype,
-                    save_optimizer_state=config.lr_finder_save_optimizer_state,
-                )
-                self.initial_lr = lr_finder.find(
-                    train_dataloader,
-                    forward_fn=forward_fn,
-                    start_lr=config.lr_finder_start,
-                    end_lr=config.lr_finder_end,
-                    num_steps=config.lr_finder_steps,
-                )
-                for pg in self.optimizer.param_groups:
-                    pg["lr"] = self.initial_lr
-                logger.info("LR finder found optimal LR: %.2e", self.initial_lr)
+                finder_forward = forward_fn
+                finder_criterion = criterion
+
+            lr_finder = LRFinder(
+                model,
+                optimizer,
+                criterion=finder_criterion,
+                device=self.device,
+                trainable_only=config.lr_finder_trainable_only,
+                amp_dtype=amp_dtype,
+                save_optimizer_state=config.lr_finder_save_optimizer_state,
+            )
+            self.initial_lr = lr_finder.find(
+                train_dataloader,
+                forward_fn=finder_forward,
+                start_lr=config.lr_finder_start,
+                end_lr=config.lr_finder_end,
+                num_steps=config.lr_finder_steps,
+                log_steps=config.lr_finder_log_steps,
+            )
+            self.initial_lr = max(self.initial_lr, config.min_lr)
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = self.initial_lr
+            logger.info("LR finder found optimal LR: %.2e", self.initial_lr)
         else:
             self.initial_lr = self.optimizer.param_groups[0]["lr"]
 
-        steps_per_epoch = (len(train_dataloader) + config.gradient_accumulation_steps - 1) // max(
-            config.gradient_accumulation_steps, 1
+        steps_per_epoch = max(
+            (len(train_dataloader) + config.gradient_accumulation_steps - 1) // max(
+                config.gradient_accumulation_steps, 1
+            ),
+            1,
         )
         num_training_steps = steps_per_epoch * config.max_epochs
 
@@ -301,6 +314,9 @@ class Trainer:
 
             train_loss = self._train_epoch()
             metrics = {"train_loss": train_loss}
+            
+            lr = self.optimizer.param_groups[0]["lr"] if self.optimizer and self.optimizer.param_groups else 0
+            logger.info("Epoch %d  train_loss=%.4f  lr=%.2e", epoch, train_loss, lr)
 
             if self.eval_dataloader is not None:
                 eval_metrics = self.evaluate()
@@ -310,7 +326,7 @@ class Trainer:
 
             if primary_metric and primary_metric in metrics:
                 chosen_metric = primary_metric
-                higher_is_better = primary_metric != "loss"
+                higher_is_better = primary_metric not in LOWER_IS_BETTER_METRICS
             elif "accuracy" in metrics:
                 chosen_metric = "accuracy"
                 higher_is_better = True
@@ -318,22 +334,25 @@ class Trainer:
                 chosen_metric = "loss"
                 higher_is_better = False
 
-            if self.eval_dataloader is None:
-                if (
-                    hasattr(self.scheduler, "step_epoch")
-                    and getattr(self.config, "warmup_ratio", 0) == 0
-                ):
-                    self.scheduler.step_epoch(epoch)
-                elif hasattr(self.scheduler, "_epoch"):
-                    self.scheduler._epoch = epoch
-                status = "CONTINUE"
-            else:
+            if getattr(self.config, "warmup_ratio", 0) > 0:
+                # Step-based scheduling: scheduler.step() runs after every
+                # optimizer step in _train_epoch. Do NOT call step_epoch()
+                # here — its epoch-based formula would overwrite the LR
+                # computed by the step schedule. Only track the epoch for
+                # surge_lr().
+                self.scheduler._epoch = epoch
+            elif hasattr(self.scheduler, "step_epoch"):
+                self.scheduler.step_epoch(epoch)
+
+            if self.eval_dataloader is not None:
                 status = self.selgis.eval_epoch(
                     metrics,
                     epoch,
                     primary_metric=chosen_metric,
                     higher_is_better=higher_is_better,
                 )
+            else:
+                status = "CONTINUE"
 
             if status == "STOP":
                 break
@@ -351,18 +370,28 @@ class Trainer:
         num_steps = 0
         accum_steps = max(self.config.gradient_accumulation_steps, 1)
         accum_count = 0
+        log_steps = getattr(self.config, 'logging_steps', 10) or 10
 
+        logger.info("Starting epoch %d, dataloader length: %d", self._current_epoch, len(self.train_dataloader) if self.train_dataloader else 0)
         self.optimizer.zero_grad(set_to_none=True)
 
-        for batch in self.train_dataloader:
+        for batch_idx, batch in enumerate(self.train_dataloader):
             self._call_callbacks("on_step_begin", step=self._global_step)
 
             loss = self._training_step(batch)
+            
+            if batch_idx == 0:
+                logger.debug("batch_idx=%d, loss returned=%s", batch_idx, loss)
 
             if loss is not None:
-                total_loss += loss
+                loss_val = loss.item() if hasattr(loss, 'item') else loss
+                total_loss += loss_val
                 num_steps += 1
                 accum_count += 1
+                
+                if self._global_step % log_steps == 0:
+                    lr = self.optimizer.param_groups[0]["lr"] if self.optimizer.param_groups else 0
+                    logger.info("[METRIC] step=%d epoch=%d loss=%.4f lr=%.2e", self._global_step, self._current_epoch, loss_val, lr)
 
                 if accum_count >= accum_steps:
                     self.selgis.optimizer_step()
@@ -377,7 +406,7 @@ class Trainer:
             self._call_callbacks(
                 "on_step_end",
                 step=self._global_step,
-                loss=loss if loss is not None else 0.0,
+                loss=loss if loss is not None else None,
             )
             self._maybe_release_memory()
 
@@ -404,6 +433,16 @@ class Trainer:
             torch.cuda.empty_cache()
 
     def _step_scheduler_if_needed(self) -> None:
+        """Step LR at each optimizer step when using warmup_ratio.
+
+        Scheduling strategy:
+        - ``warmup_ratio > 0`` : step-based scheduling via ``scheduler.step()``
+          (called here after every optimizer step). Epoch-based stepping in
+          ``train()`` only sets ``scheduler._epoch`` without updating LR.
+        - ``warmup_ratio == 0`` (default) : epoch-based scheduling via
+          ``scheduler.step_epoch()`` called once per epoch in ``train()``.
+          Step-based updates are never invoked.
+        """
         if getattr(self.config, "warmup_ratio", 0) <= 0:
             return
         if hasattr(self.scheduler, "step"):
@@ -416,6 +455,16 @@ class Trainer:
         if logits is not None:
             del logits
 
+        if loss is None:
+            logger.debug("_training_step: loss is None")
+            return None
+
+        try:
+            loss_val = loss.item()
+        except Exception as e:
+            logger.debug("_training_step: loss.item() failed: %s", e)
+            return None
+
         if not self.selgis.check_loss(loss):
             return None
 
@@ -423,14 +472,16 @@ class Trainer:
         scaled_loss = loss / accum_steps
         self.selgis.backward_step(scaled_loss)
 
-        return loss.item()
+        return loss_val
 
     def _forward(
         self,
         batch: Any,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.forward_fn is not None:
-            if not self._has_device_map:
+            if self._has_device_map:
+                batch = move_to_device(batch, "cuda")
+            else:
                 batch = move_to_device(batch, self.device)
             return self.forward_fn(self.model, batch)
 
@@ -439,20 +490,18 @@ class Trainer:
         if is_dict_like(inputs):
             inputs_dict = dict(inputs)
 
-            # Handle case where dataset returns "text" instead of "input_ids"
             if "input_ids" not in inputs_dict and "text" in inputs_dict:
                 raise ValueError("Dataset must return tokenized 'input_ids', not raw 'text'. Use data_type='text' with proper tokenizer.")
 
-            # Add token_type_ids if missing (required by some models like Gemma3)
-            if "token_type_ids" not in inputs_dict:
-                input_ids = inputs_dict.get("input_ids")
-                if input_ids is not None:
-                    inputs_dict["token_type_ids"] = torch.zeros_like(input_ids)
+            _add_token_type_ids(inputs_dict, self.model)
 
-            if not self._has_device_map:
-                inputs_dict = move_to_device(inputs_dict, self.device)
+            target_device = self.device
+            if self._has_device_map:
+                target_device = next(self.model.parameters()).device
 
-            outputs = self.model(**inputs_dict)
+            inputs_dict = move_to_device(inputs_dict, target_device)
+
+            outputs = call_model_with_dict_inputs(self.model, inputs_dict)
 
             if hasattr(outputs, "loss") and outputs.loss is not None:
                 logits = outputs.logits if hasattr(outputs, "logits") else outputs
@@ -461,14 +510,16 @@ class Trainer:
             logits = outputs.logits if hasattr(outputs, "logits") else outputs
 
             if labels is not None and self.criterion is not None:
-                if not self._has_device_map:
-                    labels = move_to_device(labels, self.device)
+                labels = move_to_device(labels, target_device)
                 return self.criterion(logits, labels), logits
 
             raise ValueError("Model doesn't return loss and no criterion provided")
 
-        if not self._has_device_map:
-            inputs = move_to_device(inputs, self.device)
+        target_device = self.device
+        if self._has_device_map:
+            target_device = next(self.model.parameters()).device
+
+        inputs = move_to_device(inputs, target_device)
 
         outputs = self.model(inputs)
 
@@ -477,8 +528,7 @@ class Trainer:
         if labels is None:
             raise ValueError("Labels required for training")
 
-        if not self._has_device_map:
-            labels = move_to_device(labels, self.device)
+        labels = move_to_device(labels, target_device)
 
         return self.criterion(outputs, labels), outputs
 
@@ -509,7 +559,7 @@ class Trainer:
 
             total_loss += loss.item()
             num_batches += 1
-            logits_shape = tuple(logits.shape)
+            logits_shape = logits.shape
 
             labels_cpu = None
             if labels is not None:
@@ -519,19 +569,19 @@ class Trainer:
                     else labels
                 )
 
-            is_regression = labels_cpu is not None and (
-                torch.is_floating_point(labels_cpu)
-                or (
-                    len(logits_shape) == labels_cpu.dim()
-                    and logits_shape == tuple(labels_cpu.shape)
+            if self.compute_metrics is not None or labels_cpu is not None:
+                is_regression = labels_cpu is not None and (
+                    torch.is_floating_point(labels_cpu)
+                    and not (labels_cpu.dim() == 1 and logits_shape[-1] > 1)
                 )
-                or (len(logits_shape) > 1 and logits_shape[-1] == 1)
-            )
 
-            if is_regression:
-                current_preds = logits.cpu()
+                if is_regression:
+                    current_preds = logits.cpu()
+                else:
+                    current_preds = logits.argmax(dim=-1).cpu() if logits.dim() > 1 else logits.cpu()
             else:
-                current_preds = logits.argmax(dim=-1).cpu() if logits.dim() > 1 else logits.cpu()
+                is_regression = False
+                current_preds = None
 
             del logits
 
@@ -563,7 +613,8 @@ class Trainer:
             metrics.update(self.compute_metrics(preds_cat, labels_cat))
         elif self.compute_metrics is None:
             if total > 0:
-                metrics["accuracy"] = correct / total * 100
+                # Fraction in [0, 1] — consistent with compute_metrics outputs
+                metrics["accuracy"] = correct / total
             if regression_count > 0:
                 metrics["mse"] = regression_se_sum / regression_count
                 metrics["mae"] = regression_ae_sum / regression_count
@@ -736,7 +787,7 @@ class TransformerTrainer(Trainer):
             **kwargs,
         )
 
-        self.tokenizer = tokenizer
+        self.tokenizer = tokenizer if tokenizer is not None else getattr(self, "tokenizer", None)
 
         # ── Criterion override for chunked CE ────────────────────────────
         if self._chunked_ce_active and self.criterion is None:
@@ -758,14 +809,14 @@ class TransformerTrainer(Trainer):
         No-op if CUDA is unavailable.  Falls back to memory-efficient
         attention on GPUs older than Ampere (compute capability < 8.0).
         """
-        if not _torch.cuda.is_available():
+        if not torch.cuda.is_available():
             logger.debug("Flash Attention requires CUDA -- skipped on CPU/MPS")
             return
 
         try:
             import torch.backends.cuda  # noqa: F401 (side-effect import)
 
-            sm_major, sm_minor = _torch.cuda.get_device_capability()
+            sm_major, sm_minor = torch.cuda.get_device_capability()
 
             if sm_major >= 8:
                 torch.backends.cuda.enable_flash_sdp(True)
@@ -820,7 +871,6 @@ class TransformerTrainer(Trainer):
             return super()._forward(batch)
 
         if self.forward_fn is not None:
-            # Custom forward_fn takes precedence
             if not self._has_device_map:
                 batch = move_to_device(batch, self.device)
             return self.forward_fn(self.model, batch)
@@ -840,16 +890,13 @@ class TransformerTrainer(Trainer):
         # Build model inputs WITHOUT labels so model doesn't compute CE
         model_inputs = {k: v for k, v in inputs_dict.items() if k != "labels"}
 
-        # Add token_type_ids if missing (required by some models like Gemma3)
-        if "token_type_ids" not in model_inputs:
-            input_ids = model_inputs.get("input_ids")
-            if input_ids is not None:
-                model_inputs["token_type_ids"] = torch.zeros_like(input_ids)
+        # Add token_type_ids if the model supports them (e.g. Gemma3)
+        _add_token_type_ids(model_inputs, self.model)
 
-        if not self._has_device_map:
+        if self._has_device_map:
+            model_inputs = move_to_device(model_inputs, 'cuda')
+        else:
             model_inputs = move_to_device(model_inputs, self.device)
-            if labels is not None:
-                labels = move_to_device(labels, self.device)
 
         outputs = self.model(**model_inputs)
 
@@ -883,6 +930,11 @@ class TransformerTrainer(Trainer):
                 "second element of the batch tuple."
             )
 
+        # Labels must live on the same device as the logits (with
+        # device_map the batch dict is not fully moved upfront).
+        if labels.device != logits.device:
+            labels = labels.to(logits.device)
+
         loss = self.criterion(logits, labels)
 
         # Return a detached dummy instead of logits to free memory faster.
@@ -913,6 +965,7 @@ class TransformerTrainer(Trainer):
 
         self.model.eval()
         total_loss = 0.0
+        total_weight = 0  # tokens (or elements) contributing to the loss
         total_tokens = 0
         num_batches = 0
 
@@ -921,10 +974,14 @@ class TransformerTrainer(Trainer):
 
             if is_dict_like(inputs):
                 inputs_dict = dict(inputs)
-                if not self._has_device_map:
+                if self._has_device_map:
+                    inputs_dict = move_to_device(inputs_dict, 'cuda')
+                else:
                     inputs_dict = move_to_device(inputs_dict, self.device)
             else:
-                if not self._has_device_map:
+                if self._has_device_map:
+                    inputs = move_to_device(inputs, 'cuda')
+                else:
                     inputs = move_to_device(inputs, self.device)
                 inputs_dict = {"input_ids": inputs}
 
@@ -932,11 +989,20 @@ class TransformerTrainer(Trainer):
                 outputs = self.model(**inputs_dict)
 
             if hasattr(outputs, "loss") and outputs.loss is not None:
-                total_loss += outputs.loss.item()
                 labels = inputs_dict.get("labels")
                 if labels is not None:
-                    non_pad = (labels != -100).sum().item()
-                    total_tokens += non_pad
+                    # Weight by the number of real (non-pad) tokens so that
+                    # an undersized last batch doesn't bias the average.
+                    weight = (labels != -100).sum().item()
+                else:
+                    input_ids = inputs_dict.get("input_ids")
+                    weight = input_ids.numel() if input_ids is not None else 1
+                weight = max(weight, 1)
+                total_loss += outputs.loss.item() * weight
+                total_weight += weight
+
+                if labels is not None:
+                    total_tokens += max((labels != -100).sum().item(), 0)
                 else:
                     input_ids = inputs_dict.get("input_ids")
                     if input_ids is not None:
@@ -945,13 +1011,18 @@ class TransformerTrainer(Trainer):
             num_batches += 1
             del outputs
 
-        avg_loss = total_loss / max(num_batches, 1)
+        if total_weight > 0:
+            avg_loss = total_loss / total_weight
+        else:
+            avg_loss = 0.0
 
         try:
             perplexity = math.exp(min(avg_loss, 100))
         except OverflowError:
             perplexity = float("inf")
 
+        logger.info("Eval_loss=%.4f perplexity=%.4f", avg_loss, perplexity)
+        
         metrics: dict[str, float] = {
             "loss": avg_loss,
             "perplexity": perplexity,
@@ -975,20 +1046,20 @@ class TransformerTrainer(Trainer):
 
             trust = getattr(config, "trust_remote_code", False)
             tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=trust)
-            print(f"[INFO] Tokenizer auto-loaded from {model_path}")
+            logger.info("Tokenizer auto-loaded from %s", model_path)
             return tokenizer
         except Exception:
-            print("[WARN] Could not auto-load tokenizer. Pass tokenizer explicitly if needed.")
+            logger.warning("Could not auto-load tokenizer. Pass tokenizer explicitly if needed.")
             return None
 
     @staticmethod
     def _sync_pad_token(model: nn.Module, tokenizer: Any) -> None:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-            print(f"[INFO] pad_token not set — using eos_token ({tokenizer.eos_token!r})")
+            logger.info("pad_token not set — using eos_token (%r)", tokenizer.eos_token)
         if hasattr(model, "config") and getattr(model.config, "pad_token_id", None) is None:
             model.config.pad_token_id = tokenizer.pad_token_id
-            print(f"[INFO] Model pad_token_id set to {tokenizer.pad_token_id}")
+            logger.info("Model pad_token_id set to %d", tokenizer.pad_token_id)
 
     @staticmethod
     def _ensure_pad_token_id(model: nn.Module) -> None:
@@ -1001,7 +1072,7 @@ class TransformerTrainer(Trainer):
             if isinstance(eos_id, list):
                 eos_id = eos_id[0]
             model.config.pad_token_id = eos_id
-            print(f"[INFO] No tokenizer provided — pad_token_id set to eos_token_id ({eos_id})")
+            logger.info("No tokenizer provided — pad_token_id set to eos_token_id (%s)", eos_id)
 
     def _load_model(self, path: str, config: TransformerConfig) -> nn.Module:
         # Clean memory before loading large model
@@ -1025,7 +1096,7 @@ class TransformerTrainer(Trainer):
 
         if bnb_config is not None and device_map is None:
             device_map = "auto"
-            print("[INFO] device_map='auto' set automatically (required for quantization)")
+            logger.info("device_map='auto' set automatically (required for quantization)")
 
         load_kw: dict[str, Any] = {"trust_remote_code": trust_remote}
         if bnb_config is not None:
@@ -1070,18 +1141,16 @@ class TransformerTrainer(Trainer):
         try:
             from transformers import BitsAndBytesConfig
         except ImportError:
-            print(
-                "[WARN] bitsandbytes/transformers not available. Proceeding without quantization."
-            )
+            logger.warning("bitsandbytes/transformers not available. Proceeding without quantization.")
             return None
 
         try:
             if config.quantization_type == "8bit":
-                print("[INFO] Quantization: 8-bit enabled")
+                logger.info("Quantization: 8-bit enabled")
                 return BitsAndBytesConfig(load_in_8bit=True)
             if config.quantization_type == "4bit":
                 compute_dtype = getattr(torch, config.bnb_4bit_compute_dtype)
-                print(f"[INFO] Quantization: 4-bit enabled ({config.bnb_4bit_quant_type})")
+                logger.info("Quantization: 4-bit enabled (%s)", config.bnb_4bit_quant_type)
                 return BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=compute_dtype,
@@ -1089,7 +1158,7 @@ class TransformerTrainer(Trainer):
                     bnb_4bit_use_double_quant=config.bnb_4bit_use_double_quant,
                 )
         except Exception as exc:
-            print(f"[WARN] Failed to configure quantization: {exc}. Proceeding without it.")
+            logger.warning("Failed to configure quantization: %s. Proceeding without it.", exc)
 
         return None
 
@@ -1162,7 +1231,7 @@ class TransformerTrainer(Trainer):
 
         if adapter_name_or_path:
             peft_model = PeftModel.from_pretrained(model, adapter_name_or_path, is_trainable=True)
-            print(f"[INFO] Loaded existing LoRA adapter from {adapter_name_or_path}")
+            logger.info("Loaded existing LoRA adapter from %s", adapter_name_or_path)
         else:
             filtered_config = {k: v for k, v in peft_config.items() if k != "task_type"}
             lora_config = LoraConfig(task_type=task_type, **filtered_config)
@@ -1170,11 +1239,7 @@ class TransformerTrainer(Trainer):
 
         trainable_params = sum(p.numel() for p in peft_model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in peft_model.parameters())
-        print(
-            f"[INFO] LoRA applied: {trainable_params:,} / "
-            f"{total_params:,} params trainable "
-            f"({100 * trainable_params / total_params:.2f}%)"
-        )
+        logger.info("LoRA applied: %d / %d params trainable (%.2f%%)", trainable_params, total_params, 100 * trainable_params / total_params if total_params > 0 else 0.0)
         return peft_model
 
     def _apply_unsloth(
@@ -1199,7 +1264,7 @@ class TransformerTrainer(Trainer):
         try:
             from unsloth import FastLanguageModel
         except ImportError:
-            print("[WARN] Unsloth not installed. Install with: pip install unsloth")
+            logger.warning("Unsloth not installed. Install with: pip install unsloth")
             return model
 
         max_seq_length = getattr(config, "max_length", 512)
@@ -1209,15 +1274,15 @@ class TransformerTrainer(Trainer):
         try:
             current_model_path = getattr(config, "model_name_or_path", "")
             if not current_model_path:
-                print("[WARN] Unsloth requires model_name_or_path. Skipping.")
+                logger.warning("Unsloth requires model_name_or_path. Skipping.")
                 return model
 
             model_name_lower = current_model_path.lower()
             is_gemma_4 = "gemma-4" in model_name_lower or "gemma4" in model_name_lower
             if is_gemma_4:
-                print("[INFO] Gemma 4 detected - using Unsloth with transformers>=5.5.0")
+                logger.info("Gemma 4 detected - using Unsloth with transformers>=5.5.0")
 
-            print(f"[INFO] Applying Unsloth to {current_model_path}...")
+            logger.info("Applying Unsloth to %s...", current_model_path)
 
             unsloth_model, tokenizer = FastLanguageModel.from_pretrained(
                 model_name=current_model_path,
@@ -1244,18 +1309,15 @@ class TransformerTrainer(Trainer):
 
                 trainable = sum(p.numel() for p in unsloth_model.parameters() if p.requires_grad)
                 total = sum(p.numel() for p in unsloth_model.parameters())
-                print(
-                    f"[INFO] Unsloth + LoRA: {trainable:,} / {total:,} trainable "
-                    f"({100 * trainable / total:.2f}%)"
-                )
+                logger.info("Unsloth + LoRA: %d / %d trainable (%.2f%%)", trainable, total, 100 * trainable / total if total > 0 else 0.0)
 
             self.tokenizer = tokenizer
-            print("[INFO] Unsloth applied successfully")
+            logger.info("Unsloth applied successfully")
 
             return unsloth_model
 
         except Exception as e:
-            print(f"[WARN] Failed to apply Unsloth: {e}. Continuing without.")
+            logger.warning("Failed to apply Unsloth: %s. Continuing without.", e)
             return model
 
     def _create_optimizer(
@@ -1290,7 +1352,7 @@ class TransformerTrainer(Trainer):
                     warmup_init=False,
                 )
             except ImportError:
-                print("[WARN] Adafactor not available, falling back to AdamW")
+                logger.warning("Adafactor not available, falling back to AdamW")
         return optim.AdamW(param_groups, lr=config.learning_rate)
 
     # ── Save / push ───────────────────────────────────────────────────────
@@ -1300,7 +1362,7 @@ class TransformerTrainer(Trainer):
             self.model.save_pretrained(path)
             if self.tokenizer:
                 self.tokenizer.save_pretrained(path)
-            print(f"[SAVE] Model saved to {path}")
+            logger.info("Model saved to %s", path)
         else:
             self.save_model(f"{path}/pytorch_model.pt")
 
@@ -1310,4 +1372,4 @@ class TransformerTrainer(Trainer):
         self.model.push_to_hub(repo_id, **kwargs)
         if self.tokenizer:
             self.tokenizer.push_to_hub(repo_id, **kwargs)
-        print(f"[INFO] Model pushed to https://huggingface.co/{repo_id}")
+        logger.info("Model pushed to https://huggingface.co/%s", repo_id)

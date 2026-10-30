@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import random
@@ -196,6 +197,38 @@ def unpack_batch(
         return batch, None
 
     return batch, None
+
+
+def call_model_with_dict_inputs(model: nn.Module, inputs_dict: dict) -> Any:
+    """Call *model* with dict inputs, adapting to plain PyTorch modules.
+
+    HF-style models accept keyword inputs (``model(**{"input_ids": ...})``).
+    Plain ``nn.Module``s (e.g. ``nn.Linear``) take a single positional
+    input and raise ``TypeError`` on unexpected keyword arguments, so the
+    single value is passed positionally instead.
+
+    Args:
+        model: Model to call.
+        inputs_dict: Dict of inputs (``labels``/``label`` keys excluded).
+
+    Returns:
+        Model output.
+    """
+    model_inputs = {
+        k: v for k, v in inputs_dict.items() if k not in ("labels", "label")
+    }
+    if len(model_inputs) == 1:
+        key, value = next(iter(model_inputs.items()))
+        try:
+            params = inspect.signature(model.forward).parameters
+        except (TypeError, ValueError):
+            params = {}
+        accepts_kw = key in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+        if not accepts_kw:
+            return model(value)
+    return model(**model_inputs)
 
 
 def get_optimizer_grouped_params(

@@ -166,18 +166,12 @@ def _wrap_with_checkpoint(
     """Return a forward function wrapped with torch.utils.checkpoint."""
 
     def checkpointed_forward(*args, **kwargs):
-        # checkpoint does not support keyword arguments with use_reentrant=False
-        # in older PyTorch versions; handle gracefully.
-        try:
-            return checkpoint(
-                original_forward,
-                *args,
-                use_reentrant=use_reentrant,
-                **kwargs,
-            )
-        except TypeError:
-            # PyTorch < 1.13 signature: checkpoint(fn, *args) — no kwargs
-            return checkpoint(original_forward, *args, **kwargs)
+        return checkpoint(
+            original_forward,
+            *args,
+            use_reentrant=use_reentrant,
+            **kwargs,
+        )
 
     return checkpointed_forward
 

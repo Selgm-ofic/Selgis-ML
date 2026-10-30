@@ -54,9 +54,9 @@ class Callback(ABC):
         self,
         trainer: Trainer,
         step: int,
-        loss: float,
+        loss: float | None,
     ) -> None:
-        """Called after each training step."""
+        """Called after each training step. *loss* is None for skipped batches."""
 
     def on_evaluate(
         self,
@@ -107,7 +107,16 @@ class EarlyStoppingCallback(Callback):
             },
         )
 
-        value = metrics.get(self.metric, 0.0)
+        value = metrics.get(self.metric)
+
+        if value is None and self.metric == "loss":
+            # No eval dataloader — fall back to the training loss.
+            value = metrics.get("train_loss")
+
+        if value is None:
+            # Metric not produced this epoch — don't count it as either
+            # an improvement or a regression.
+            return
 
         if self.mode == "min":
             improved = value < self._best - self.min_delta
@@ -167,7 +176,15 @@ class CheckpointCallback(Callback):
         metrics: dict[str, float],
     ) -> None:
         """Save checkpoint (and best checkpoint) when appropriate."""
-        value = metrics.get(self.metric, 0.0)
+        value = metrics.get(self.metric)
+
+        if value is None and self.metric == "loss":
+            # No eval dataloader — fall back to the training loss.
+            value = metrics.get("train_loss")
+
+        if value is None:
+            # Metric not produced this epoch — nothing to compare against.
+            return
 
         if self.mode == "min":
             is_best = value < self._best
@@ -204,9 +221,11 @@ class CheckpointCallback(Callback):
         """
         path.mkdir(parents=True, exist_ok=True)
 
-        is_peft = getattr(getattr(trainer, "selgis", None), "_is_peft_model", False)
-        if is_peft:
-            state_dict = {}
+        state_dict = {}
+        state_format = "full"
+        check_peft = getattr(getattr(trainer, "selgis", None), "_is_peft_model", False)
+        save_trainable_only = check_peft or getattr(trainer.config, "save_trainable_only", False)
+        if save_trainable_only:
             for name, param in trainer.model.named_parameters():
                 if param.requires_grad:
                     if param.device.type == "cpu":
@@ -215,7 +234,6 @@ class CheckpointCallback(Callback):
                         state_dict[name] = param.detach().cpu()
             state_format = "trainable_only"
         else:
-            state_dict = {}
             for name, tensor in trainer.model.state_dict().items():
                 if isinstance(tensor, torch.Tensor):
                     if tensor.device.type == "cpu":
@@ -224,7 +242,6 @@ class CheckpointCallback(Callback):
                         state_dict[name] = tensor.detach().cpu()
                 else:
                     state_dict[name] = tensor
-            state_format = "full"
         torch.save(state_dict, path / "model.pt")
 
         torch.save(
@@ -363,9 +380,11 @@ class LoggingCallback(Callback):
         self,
         trainer: Trainer,
         step: int,
-        loss: float,
+        loss: float | None,
     ) -> None:
         """Print step loss and LR at configured intervals."""
+        if loss is None:
+            return  # batch skipped (rollback/anomaly) — nothing to log
         if step > 0 and step % self.log_every == 0:
             lr = trainer.optimizer.param_groups[0]["lr"]
             logger.debug("Step %6d | Loss: %.4f | LR: %.2e", step, loss, lr)
@@ -409,13 +428,14 @@ class WandBCallback(Callback):
         self,
         trainer: Trainer,
         step: int,
-        loss: float,
+        loss: float | None,
     ) -> None:
         """Log step loss."""
-        if self._wandb is not None:
-            self._wandb.log(
-                {"train/loss": loss, "train/step": step},
-            )
+        if self._wandb is None or loss is None:
+            return
+        self._wandb.log(
+            {"train/loss": loss, "train/step": step},
+        )
 
     def on_epoch_end(
         self,

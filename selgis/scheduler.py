@@ -209,7 +209,8 @@ class SmartScheduler:
             New learning rate.
         """
         self._lr_scale *= factor
-        new_lr = max(self._compute_lr_after_warmup(self._epoch), self.config.min_lr)
+        current_lr = self.get_lr()
+        new_lr = max(current_lr * factor, self.config.min_lr)
         self._set_lr(new_lr)
         return new_lr
 

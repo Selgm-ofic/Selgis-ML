@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import mmap
 import time
@@ -88,27 +89,30 @@ class TextDataset(Dataset):
             self._preprocess()
 
     def _build_index(self) -> None:
-        """Build line offset index for fast random access."""
+        """Build line offset index for fast random access.
+
+        Offsets are byte offsets into the raw file, computed in binary
+        mode.  Text-mode offsets are unsafe: universal-newline
+        translation (CRLF → LF) and multi-byte UTF-8 characters make
+        character counts diverge from byte positions.
+        """
         if self.use_mmap:
-            self._file = open(self.data_path)
+            self._file = open(self.data_path, "rb")
             self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
 
             pos = 0
-            line_num = 0
             while True:
                 line = self._mmap.readline()
                 if not line:
                     break
                 self._index.append((pos, len(line)))
-                pos = self._mmap.tell()
-                line_num += 1
+                pos += len(line)
         else:
-            with open(self.data_path, encoding="utf-8") as f:
+            with open(self.data_path, "rb") as f:
                 pos = 0
-                for line in f:
-                    line_len = len(line.encode("utf-8"))
-                    self._index.append((pos, line_len))
-                    f.seek(pos + line_len)
+                for raw in f:
+                    self._index.append((pos, len(raw)))
+                    pos += len(raw)
 
     def _load_record(self, idx: int) -> dict[str, Any]:
         """Load a single record by index."""
@@ -116,11 +120,11 @@ class TextDataset(Dataset):
 
         if self._mmap:
             self._mmap.seek(start)
-            line = self._mmap.readline().decode("utf-8").rstrip("\n")
+            line = self._mmap.read(length).decode("utf-8").rstrip("\r\n")
         else:
-            with open(self.data_path, encoding="utf-8") as f:
+            with open(self.data_path, "rb") as f:
                 f.seek(start)
-                line = f.read(length).rstrip("\n")
+                line = f.read(length).decode("utf-8").rstrip("\r\n")
 
         return self._parse_line(line)
 
@@ -130,11 +134,11 @@ class TextDataset(Dataset):
 
         if self._file:
             self._file.seek(start)
-            line = self._file.read(length).rstrip("\n")
+            line = self._file.read(length).decode("utf-8").rstrip("\r\n")
         else:
-            with open(self.data_path, encoding="utf-8") as f:
+            with open(self.data_path, "rb") as f:
                 f.seek(start)
-                line = f.read(length).rstrip("\n")
+                line = f.read(length).decode("utf-8").rstrip("\r\n")
 
         return self._parse_line(line)
 
@@ -150,10 +154,15 @@ class TextDataset(Dataset):
         """Load all records into memory (for small files)."""
         self._records: list[dict[str, Any]] = []
 
-        with open(self.data_path, encoding="utf-8") as f:
-            for line in f:
-                record = self._parse_line(line.rstrip("\n"))
-                self._records.append(record)
+        if self.file_format == "csv":
+            # Parse CSV properly: split into columns and skip the header row.
+            with open(self.data_path, encoding="utf-8", newline="") as f:
+                self._records.extend(csv.DictReader(f))
+        else:
+            with open(self.data_path, encoding="utf-8") as f:
+                for line in f:
+                    record = self._parse_line(line.rstrip("\r\n"))
+                    self._records.append(record)
 
         self._metrics["total_samples"] = len(self._records)
 
@@ -162,14 +171,20 @@ class TextDataset(Dataset):
         if not self.tokenizer or self._tokenized_cache:
             return
 
-        cache_path = self.cache_dir / f"{self.data_path.stem}_tokenized.pt"
+        cache_path = self.cache_dir / f"{self.data_path.stem}_tokenized.pt" if self.cache_dir else None
 
-        if cache_path.exists():
-            self._tokenized_cache = torch.load(cache_path)
+        if cache_path and cache_path.exists():
+            self._tokenized_cache = torch.load(cache_path, weights_only=True)
             return
 
         if not self._records:
-            raise ValueError("Cannot pre-tokenize without loading records first")
+            if self._index:
+                # jsonl keeps only a byte-offset index — materialize records
+                # for pre-tokenization (pre_tokenize is an explicit
+                # load-everything request anyway).
+                self._records = [self._load_record(i) for i in range(len(self._index))]
+            else:
+                raise ValueError("Cannot pre-tokenize without loading records first")
 
         tokenized = self.tokenizer(
             [r.get(self.text_column, r.get("text", "")) for r in self._records],
@@ -179,7 +194,7 @@ class TextDataset(Dataset):
             return_tensors="pt",
         )
 
-        if self.cache_dir:
+        if cache_path:
             torch.save(tokenized, cache_path)
 
         self._tokenized_cache = tokenized
@@ -202,7 +217,12 @@ class TextDataset(Dataset):
                 "labels": self._tokenized_cache["input_ids"][idx],
             }
 
-        record = self._load_record(idx)
+        if self._records and self.file_format != "jsonl":
+            # txt/csv/json keep all records in memory (_load_all);
+            # _load_record only works for jsonl, which has a byte index.
+            record = self._records[idx]
+        else:
+            record = self._load_record(idx)
 
         # Auto-detect chat format if not specified
         chat_format = self.chat_format
@@ -373,15 +393,21 @@ class HFTextDataset(Dataset):
         self.format_fn = format_fn
 
         try:
-            from datasets import load_dataset
+            from datasets import DatasetDict, load_dataset
 
-            self._dataset = load_dataset(
+            loaded = load_dataset(
                 dataset_name,
                 cache_dir=cache_dir,
                 streaming=streaming,
             )
-            if hasattr(self._dataset, "split"):
-                self._dataset = self._dataset["train"]
+            # load_dataset("name") without a split returns a DatasetDict
+            # keyed by split names; pick "train" (or the first split).
+            if isinstance(loaded, DatasetDict):
+                if "train" in loaded:
+                    loaded = loaded["train"]
+                else:
+                    loaded = next(iter(loaded.values()))
+            self._dataset = loaded
 
         except ImportError:
             raise ImportError("Install datasets: pip install datasets")
@@ -405,9 +431,11 @@ class HFTextDataset(Dataset):
                 truncation=True,
                 return_tensors="pt",
             )
+            input_ids = encoded["input_ids"].squeeze(0)
             return {
-                "input_ids": encoded["input_ids"].squeeze(0),
+                "input_ids": input_ids,
                 "attention_mask": encoded["attention_mask"].squeeze(0),
+                "labels": input_ids.clone(),
             }
 
         return {"text": text}

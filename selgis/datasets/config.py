@@ -122,7 +122,7 @@ class DatasetConfig:
         dataset = create_dataset(config)
 
     Attributes:
-        data_type: Data type ("text", "image", "multimodal", "custom", "streaming", "tabular")
+        data_type: Data type ("text", "image", "multimodal", "custom", "streaming")
         data_path: Path to main data file/folder
         train_path: Path to train dataset (if separate from eval)
         eval_path: Path to eval dataset (if separate from train)
@@ -170,7 +170,9 @@ class DatasetConfig:
     """
 
     # Data type
-    data_type: Literal["text", "image", "multimodal", "custom", "streaming", "tabular"] = "text"
+    # NOTE: "tabular" exists only as a schema (TabularSample) — the
+    # factory does not support it yet.
+    data_type: Literal["text", "image", "multimodal", "custom", "streaming"] = "text"
 
     # Data paths
     data_path: str | Path | None = None

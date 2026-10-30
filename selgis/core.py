@@ -289,14 +289,17 @@ class SelgisCore:
         return True
 
     def _rollback(self, reason: str) -> None:
-        """Rollback to last stable state, reset optimizer momentum, and reduce LR."""
+        """Rollback to last stable state, reset optimizer buffers for affected params, and reduce LR."""
         logger.warning("Rollback triggered: %s", reason)
         self._load_last_good_state()
+
 
         for group in self.optimizer.param_groups:
             for param in group["params"]:
                 if param in self.optimizer.state:
-                    del self.optimizer.state[param]
+                    for key in ("exp_avg", "exp_avg_sq"):
+                        if key in self.optimizer.state[param]:
+                            self.optimizer.state[param][key].zero_()
 
         if hasattr(self.scheduler, "reduce_lr"):
             new_lr = self.scheduler.reduce_lr()
@@ -310,6 +313,12 @@ class SelgisCore:
         Returns:
             True if the loss is normal, False if a rollback was triggered.
         """
+        if loss is None:
+            return True
+
+        if not isinstance(loss, torch.Tensor):
+            return True
+
         if not self.config.nan_recovery:
             return True
 
@@ -494,6 +503,9 @@ class SelgisCore:
         if self._amp_dtype is not None and self.device.type == "cuda":
             return torch.amp.autocast("cuda", dtype=self._amp_dtype)
         if self._amp_dtype is not None and self.device.type == "cpu":
+            if self._amp_dtype == torch.float16:
+                logger.warning("AMP fp16 on CPU is not supported by torch.amp.autocast. Falling back to no AMP.")
+                return nullcontext()
             return torch.amp.autocast("cpu", dtype=self._amp_dtype)
         return nullcontext()
 

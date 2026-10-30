@@ -112,7 +112,7 @@ class ImageDataset(BaseDataset):
             self._class_names.append(class_name)
 
             # Search for images
-            for ext in ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.webp']:
+            for ext in ('*.png', '*.jpg', '*.jpeg', '*.bmp', '*.webp'):
                 for img_path in class_dir.glob(ext):
                     self._samples.append((img_path, class_to_idx[class_name]))
 
@@ -239,13 +239,6 @@ def image_collate_fn(batch: list[dict]) -> dict[str, Any]:
 
     # Collect labels
     if "labels" in batch[0]:
-        labels = [item["labels"] for item in batch]
-
-        if labels[0].dim() == 0:
-            # Scalar labels (classes)
-            result["labels"] = torch.stack(labels)
-        else:
-            # Vector labels (multi-label)
-            result["labels"] = torch.stack(labels)
+        result["labels"] = torch.stack([item["labels"] for item in batch])
 
     return result

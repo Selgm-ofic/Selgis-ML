@@ -5,33 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`TextDataset`**: infinite loop + unbounded memory growth in non-mmap `_build_index` (text-mode byte-offset drift on Windows/CRLF/UTF-8). Indexing and record loading now use binary mode with true byte offsets; trailing `\r` no longer leaks into text from CRLF files.
+- **`ChunkedCrossEntropyLoss`**: label smoothing was mathematically wrong (`ε·log V` — a constant with zero gradient). Now implements the PyTorch definition `(1-ε)·CE + (ε/V)·Σ(-log pᵢ)`; values and gradients match `F.cross_entropy` to 1e-6.
+- **`ChunkedCrossEntropyLoss`**: chunk intermediates are no longer retained for backward. Per-chunk computation now runs inside `torch.utils.checkpoint`, so peak memory is proportional to `chunk_size` (previously chunked CE used ~1.5 GB *more* than `F.cross_entropy` on [8,512,32000]).
+- **`Trainer`**: `primary_metric` values such as `perplexity`/`mse`/`mae` were treated as "higher is better". Now governed by `LOWER_IS_BETTER_METRICS`.
+- **`Trainer`**: with `warmup_ratio > 0` the epoch-end `scheduler.step_epoch()` call overwrote the step-based LR schedule (LR jumped back to peak at every epoch boundary). Epoch stepping is now skipped in step-based mode; warmup after the LR finder now runs for real instead of being pre-consumed by a hack.
+- **`Trainer._forward`**: `token_type_ids` is no longer injected into every dict batch — only when the model's forward actually accepts it (fixes `TypeError` for Llama/Mistral/Qwen-style models).
+- **`TransformerTrainer._forward`** (chunked CE + `device_map`): labels are now moved to the logits device before the criterion call (previously caused a CUDA/CPU device mismatch).
+- **`TransformerTrainer`**: tokenizer loaded by Unsloth is no longer overwritten with `None` after `super().__init__()`; `save_pretrained()` now saves it.
+- **`HFTextDataset`**: `load_dataset("name")` returns a `DatasetDict`; the broken `hasattr(..., "split")` check never unwrapped it. Now uses `isinstance(..., DatasetDict)` and returns `labels` when tokenizing (consistent with `TextDataset`).
+- **`TextDataset`**: `pre_tokenize=True` without `cache_dir` no longer crashes with `TypeError` (cache save is simply skipped); `pre_tokenize` now also works for jsonl (records materialized from the index); `__getitem__` no longer raises `IndexError` for `.txt`/`.csv` datasets (records were loaded into memory but `__getitem__` read from the empty index); CSV files are parsed into columns with `csv.DictReader` (the header row was previously returned as a data record).
+- **`Trainer._forward` / `LRFinder`**: dict batches (`{"inputs": ..., "labels": ...}` — the documented `BaseDataset` format) now work with plain PyTorch modules (`nn.Linear` etc.) via positional input fallback, instead of raising `TypeError: forward() got an unexpected keyword argument 'inputs'`.
+- **`LRFinder`**: dict batches without `input_ids` (plain classification) no longer abort the sweep with "batch must contain input_ids for LLM training"; `fp16` on CPU no longer crashes the sweep (autocast CPU supports only bfloat16).
+- **CLI**: `selgis train --config ... --set KEY=VALUE` overrides were parsed but never applied; they are now passed through to `_build_config`.
+- **`Trainer.evaluate`**: accuracy is now a fraction in [0, 1] (consistent with `compute_metrics` outputs) instead of a percentage.
+- **`TransformerTrainer.evaluate`**: eval loss/perplexity is now token-weighted (previously an unweighted mean over batches biased the result when the last batch was smaller).
+- **Callbacks**: missing metric no longer counts as a fake improvement (`EarlyStoppingCallback`, `CheckpointCallback`); missing `loss` falls back to `train_loss`. `on_step_end` receives `loss=None` for skipped batches instead of a fake `0.0`.
+- **`LRFinder`**: model buffers (e.g. BatchNorm running stats) are now saved and restored around the sweep.
+- Removed dead shadowed module `selgis/datasets.py` (package `selgis/datasets/` always took precedence, APIs were incompatible), removed unsupported `tabular` from `DatasetConfig.data_type` (factory never implemented it), removed unused `tqdm` dependency, removed accidental `nul` file.
+
+## [0.2.8] - 2026-05-31
+
+### Added
+
+- `save_trainable_only` config option to save only trainable params for non-PEFT models
+- `py.typed` marker for PEP 561 type checking support
+- `pyyaml` as core dependency (was optional, required by CLI)
+- `--verbose`/`--quiet` flags and `--set KEY=VALUE` override in CLI
+- `selgis config validate` command for checking config files
+- CLI epilog with usage examples
+- Test coverage for LRFinder, SmartScheduler, checkpoint round-trip, CLI integration, edge cases
+
+### Changed
+
+- Tests migrated to pytest (67 tests, up from 19): proper fixtures, assertions, GPU cleanup
+- CLI: `selgis device` now prints to stdout; `_load_yaml` returns errors instead of `sys.exit()`
+- CLI: `transformer_keys` generated from dataclass fields instead of hardcoded set
+- CLI: `trainer.train()` wrapped in try/except in all training paths
+- Old `test_selgis.py` delegates to pytest for backward compatibility
+
+### Fixed
+
+- `step_epoch()` now called every epoch regardless of `warmup_ratio`
+- LR Finder for Causal LM passes `attention_mask` to model
+- Rollback zeros optimizer buffers instead of deleting state
+- CPU AMP with `fp16=True` falls back safely instead of crashing
+- Regression detection no longer misclassifies single-class classification
+- Checkpoint callback respects `save_trainable_only`
+- `reduce_lr()` uses current LR for consistent reduction
+- `ChunkedCrossEntropyLoss` uses fp32 for log-sum-exp to prevent fp16 overflow
+
+### Performance
+
+- Evaluate loop skips metric computations when no metrics are needed
+
 ## [0.2.7.1] - 2026-05-01
 
 ### Fixed
 
-- **Unsloth double loading** - Fixed bug where model was loaded twice when use_unsloth=True (once via transformers, once via Unsloth). Now skips _load_model when using Unsloth.
-- **LR Finder for Causal LM** - Fixed ValueError "You must specify exactly one of input_ids or inputs_embeds" when using LR finder with causal language models
-- **Tokenized batch handling** - Dataset now properly returns tokenized input_ids when tokenizer is provided to DatasetConfig
-- **Batch size configuration** - Fixed issue where batch_size in TransformerConfig wasn't properly passed to DatasetConfig
-
-### Fixed
-
-- **LR Finder for Causal LM** - Fixed ValueError "You must specify exactly one of input_ids or inputs_embeds" when using LR finder with causal language models
-- **Tokenized batch handling** - Dataset now properly returns tokenized input_ids when tokenizer is provided to DatasetConfig
-- **Batch size configuration** - Fixed issue where batch_size in TransformerConfig wasn't properly passed to DatasetConfig
+- **Unsloth double loading** - Fixed bug where model was loaded twice when use_unsloth=True
+- **LR Finder for Causal LM** - Fixed ValueError "You must specify exactly one of input_ids or inputs_embeds"
+- **Tokenized batch handling** - Dataset now properly returns tokenized input_ids when tokenizer is provided
+- **Batch size configuration** - Fixed issue where batch_size in TransformerConfig wasn't properly passed
 
 ### Added
 
-- Custom `causal_lm_forward` function for LR finder that properly handles batch format with input_ids/attention_mask/labels
-- Validation in `_forward()` method to provide clearer error message when dataset returns raw text instead of tokenized input_ids
+- Custom `causal_lm_forward` function for LR finder that properly handles batch format
+- Validation in `_forward()` for clearer error on raw text vs tokenized input_ids
 - Memory cleanup before model loading (gc.collect + empty_cache)
 - Memory cleanup after LR finder (gc.collect + empty_cache)
-- Import unsloth at module top level to avoid warnings about import order
-- `empty_cache_steps` config option for periodic GPU memory cleanup during training
+- Import unsloth at module top level to avoid import order warnings
+- `empty_cache_steps` config option for periodic GPU memory cleanup
 
 ### Changed
 
-- Improved error messages for better debugging of dataset/tokenizer issues
+- Improved error messages for debugging dataset/tokenizer issues
 - `selgis/__init__.py`: version updated to 0.2.7.1
 - `TransformerConfig`: Added doc note that batch_size should be set in DatasetConfig
 
@@ -39,27 +91,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **LR Finder for Causal LM** - Fixed ValueError "You must specify exactly one of input_ids or inputs_embeds" when using LR finder with causal language models
-- **Tokenized batch handling** - Dataset now properly returns tokenized input_ids when tokenizer is provided to DatasetConfig
-- **Batch size configuration** - Fixed issue where batch_size in TransformerConfig wasn't properly passed to DatasetConfig
+- **LR Finder for Causal LM** - Fixed ValueError "You must specify exactly one of input_ids or inputs_embeds"
+- **Tokenized batch handling** - Dataset now properly returns tokenized input_ids when tokenizer is provided
+- **Batch size configuration** - Fixed issue where batch_size in TransformerConfig wasn't properly passed
 
 ### Added
 
-- Custom `causal_lm_forward` function for LR finder that properly handles batch format with input_ids/attention_mask/labels
-- Validation in `_forward()` method to provide clearer error message when dataset returns raw text instead of tokenized input_ids
+- Custom `causal_lm_forward` function for LR finder that properly handles batch format
+- Validation in `_forward()` for clearer error on raw text vs tokenized input_ids
 - Memory cleanup before model loading (gc.collect + empty_cache)
 - Memory cleanup after LR finder (gc.collect + empty_cache)
-- Import unsloth at module top level to avoid warnings about import order
-- `empty_cache_steps` config option for periodic GPU memory cleanup during training
+- Import unsloth at module top level to avoid import order warnings
+- `empty_cache_steps` config option for periodic GPU memory cleanup
 
 ### Changed
 
-- Improved error messages for better debugging of dataset/tokenizer issues
+- Improved error messages for debugging dataset/tokenizer issues
 - `selgis/__init__.py`: version updated to 0.2.7
 - `TransformerConfig`: Added doc note that batch_size should be set in DatasetConfig
-
-- Improved error messages for better debugging of dataset/tokenizer issues
-- `selgis/__init__.py`: version updated to 0.2.7
 
 ## [0.2.6] - 2026-04-28
 

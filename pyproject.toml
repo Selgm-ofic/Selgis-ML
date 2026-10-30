@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "selgis"
-version = "0.2.7.1"
+version = "0.2.8"
 description = "Universal Training Framework for PyTorch and HuggingFace Transformers"
 readme = "README.md"
-license = { text = "Apache 2.0" }
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "Selgis ML" }]
 keywords = ["pytorch", "transformers", "training", "lora", "peft", "deep-learning", "llm"]
@@ -15,7 +15,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -25,34 +24,23 @@ classifiers = [
 dependencies = [
     "torch>=2.0",
     "numpy>=1.20",
-    "tqdm",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-# Transformers base + accelerate (required for device_map="auto")
 transformers = [
     "transformers>=4.30",
     "datasets",
     "accelerate>=0.21.0"
 ]
-
-# For LoRA / QLoRA
 peft = ["peft>=0.5.0"]
-
-# For LLM training (4-bit/8-bit quantization)
 llm = [
     "bitsandbytes>=0.41.0",
     "accelerate>=0.21.0",
     "scipy"
 ]
-
-# Logging
 tracking = ["wandb"]
-
-# Development
 dev = ["pytest", "pytest-cov", "ruff>=0.1"]
-
-# Install all: pip install selgis[all]
 all = [
     "transformers>=4.30",
     "datasets",
@@ -63,8 +51,6 @@ all = [
     "wandb",
     "unsloth",
 ]
-
-# Unsloth for faster LLM training (~2x speed, ~50% less VRAM)
 unsloth = ["unsloth"]
 
 [project.scripts]
@@ -87,19 +73,3 @@ Homepage = "https://github.com/Selgm-ofic/Selgis-ML"
 Repository = "https://github.com/Selgm-ofic/Selgis-ML"
 Issues = "https://github.com/Selgm-ofic/Selgis-ML/issues"
 Documentation = "https://github.com/Selgm-ofic/Selgis-ML#readme"
-
-# Source files
-"example_selgis.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/example_selgis.py"
-"config.example.yaml" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/config.example.yaml"
-"test_selgis.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/test_selgis.py"
-"API.md" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/API.md"
-
-# Core modules
-"selgis/core.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/selgis/core.py"
-"selgis/trainer.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/selgis/trainer.py"
-"selgis/config.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/selgis/config.py"
-"selgis/callbacks.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/selgis/callbacks.py"
-"selgis/scheduler.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/selgis/scheduler.py"
-"selgis/utils.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/selgis/utils.py"
-"selgis/lr_finder.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/selgis/lr_finder.py"
-"selgis/datasets/__init__.py" = "https://github.com/Selgm-ofic/Selgis-ML/blob/main/selgis/datasets/__init__.py"

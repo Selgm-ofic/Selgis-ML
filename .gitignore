@@ -33,3 +33,12 @@ dist/
 # Logs
 logs/
 *.log
+
+# Training artifacts & local state
+output/
+selgis_state/
+*.pt
+*.safetensors
+nul
+checkpoints/
+test_selgis.py.bak
