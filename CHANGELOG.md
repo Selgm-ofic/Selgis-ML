@@ -5,13 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.7.2] - 2026-10-30
 
 ### Fixed
 
 - **`TextDataset`**: infinite loop + unbounded memory growth in non-mmap `_build_index` (text-mode byte-offset drift on Windows/CRLF/UTF-8). Indexing and record loading now use binary mode with true byte offsets; trailing `\r` no longer leaks into text from CRLF files.
 - **`ChunkedCrossEntropyLoss`**: label smoothing was mathematically wrong (`ε·log V` — a constant with zero gradient). Now implements the PyTorch definition `(1-ε)·CE + (ε/V)·Σ(-log pᵢ)`; values and gradients match `F.cross_entropy` to 1e-6.
-- **`ChunkedCrossEntropyLoss`**: chunk intermediates are no longer retained for backward. Per-chunk computation now runs inside `torch.utils.checkpoint`, so peak memory is proportional to `chunk_size` (previously chunked CE used ~1.5 GB *more* than `F.cross_entropy` on [8,512,32000]).
+- **`ChunkedCrossEntropyLoss`**: chunk intermediates are no longer retained for backward. Per-chunk computation now runs inside `torch.utils.checkpoint`, so peak memory is proportional to `chunk_size` (previously chunked CE used ~1.5 GB *more* than `F.cross_entropy` on [8,512,32000]; +13–16% peak VRAM confirmed independently on GTX 1660 Ti and Colab T4 with GPT-2 + LoRA).
 - **`Trainer`**: `primary_metric` values such as `perplexity`/`mse`/`mae` were treated as "higher is better". Now governed by `LOWER_IS_BETTER_METRICS`.
 - **`Trainer`**: with `warmup_ratio > 0` the epoch-end `scheduler.step_epoch()` call overwrote the step-based LR schedule (LR jumped back to peak at every epoch boundary). Epoch stepping is now skipped in step-based mode; warmup after the LR finder now runs for real instead of being pre-consumed by a hack.
 - **`Trainer._forward`**: `token_type_ids` is no longer injected into every dict batch — only when the model's forward actually accepts it (fixes `TypeError` for Llama/Mistral/Qwen-style models).
@@ -28,8 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`LRFinder`**: model buffers (e.g. BatchNorm running stats) are now saved and restored around the sweep.
 - Removed dead shadowed module `selgis/datasets.py` (package `selgis/datasets/` always took precedence, APIs were incompatible), removed unsupported `tabular` from `DatasetConfig.data_type` (factory never implemented it), removed unused `tqdm` dependency, removed accidental `nul` file.
 
-## [0.2.8] - 2026-05-31
-
 ### Added
 
 - `save_trainable_only` config option to save only trainable params for non-PEFT models
@@ -39,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `selgis config validate` command for checking config files
 - CLI epilog with usage examples
 - Test coverage for LRFinder, SmartScheduler, checkpoint round-trip, CLI integration, edge cases
+- Colab verification notebook `selgis_colab_check.ipynb` (old vs fixed ChunkedCE correctness + LoRA VRAM benchmark)
 
 ### Changed
 
@@ -48,9 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI: `trainer.train()` wrapped in try/except in all training paths
 - Old `test_selgis.py` delegates to pytest for backward compatibility
 
-### Fixed
+### Fixed (from the unreleased 0.2.8 line)
 
-- `step_epoch()` now called every epoch regardless of `warmup_ratio`
 - LR Finder for Causal LM passes `attention_mask` to model
 - Rollback zeros optimizer buffers instead of deleting state
 - CPU AMP with `fp16=True` falls back safely instead of crashing
