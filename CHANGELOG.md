@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `selgis config validate` command for checking config files
 - CLI epilog with usage examples
 - Test coverage for LRFinder, SmartScheduler, checkpoint round-trip, CLI integration, edge cases
-- Colab verification notebook `selgis_colab_check.ipynb` (old vs fixed ChunkedCE correctness + LoRA VRAM benchmark)
+- Colab verification notebook removed before release: its correctness checks are covered by permanent regression tests in CI (`tests/test_audit_regressions.py`); VRAM measurements are recorded in this changelog
 
 ### Changed
 

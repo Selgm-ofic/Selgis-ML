@@ -1,6 +1,6 @@
 # Selgis ML API Documentation
 
-**Version:** 0.2.8
+**Version:** 0.2.7.2
 **Description:** Universal Training Framework for PyTorch and HuggingFace Transformers
 
 ---
@@ -31,8 +31,8 @@ pip install selgis
 # Full (Transformers, LoRA, quantization)
 pip install "selgis[all]"
 
-# Unsloth support (recommended for LLM training)
-pip install unsloth
+# Unsloth support (optional; vendor-claimed speedups, not benchmarked here)
+pip install "selgis[unsloth]"
 ```
 
 ---
@@ -250,7 +250,7 @@ config = TransformerConfig(
     # Flash Attention
     flash_attention=False,
 
-    # Unsloth (NEW - ~2x faster, ~50% less VRAM)
+    # Unsloth (vendor-claimed ~2x faster, ~50% less VRAM)
     use_unsloth=False,
 
     # Quantization
@@ -271,16 +271,16 @@ config = TransformerConfig(
 | `quantization_type` | str | "no" | no, 8bit, 4bit |
 | `gradient_checkpointing` | bool | False | Enable gradient checkpointing |
 | `device_map` | str | None | auto, balanced, sequential |
-| `use_unsloth` | bool | False | Enable Unsloth (~2x faster training) |
+| `use_unsloth` | bool | False | Enable Unsloth (vendor-claimed ~2x faster) |
 
-### Unsloth Integration (NEW)
+### Unsloth Integration
 
-Unsloth provides ~2x faster training with ~50% less VRAM. Works with Llama, Qwen, Mistral, Phi, Gemma, Gemma 4.
+Unsloth provides ~2x faster training with ~50% less VRAM (vendor-claimed, not benchmarked in this repo). Works with Llama, Qwen, Mistral, Phi, Gemma, Gemma 4.
 
 ```python
 from selgis import TransformerConfig, TransformerTrainer
 
-# Unsloth + LoRA
+# Unsloth + LoRA (train_dataloader is required — see Quick Start)
 config = TransformerConfig(
     model_name_or_path="Qwen/Qwen2-0.5B",
     use_unsloth=True,
@@ -288,19 +288,16 @@ config = TransformerConfig(
     peft_config={"r": 16},
 )
 
-trainer = TransformerTrainer("Qwen/Qwen2-0.5B", config)
-trainer.train()
-
-# For Gemma 4
-config_gemma4 = TransformerConfig(
-    model_name_or_path="google/gemma-4-2b",
-    use_unsloth=True,
-    use_peft=True,
-    peft_config={"r": 16},
+trainer = TransformerTrainer(
+    "Qwen/Qwen2-0.5B",
+    config,
+    train_dataloader=train_loader,
+    eval_dataloader=eval_loader,
 )
+trainer.train()
 ```
 
-Requires: `pip install unsloth`
+Requires: `pip install "selgis[unsloth]"`
 
 ---
 
@@ -457,20 +454,28 @@ def forward_fn(model, batch):
 trainer = Trainer(
     model=model,
     config=config,
-    forward_fn=forward_fn,
+    train_dataloader=train_loader,   # required
+    forward_fn=forward_fn,           # criterion is not used when forward_fn is given
 )
 ```
 
 ### Custom Metrics
 
+`compute_metrics` receives `(predictions, labels)` tensors and returns a
+dict. Use the same scale as your training logic — the built-in
+(non-`compute_metrics`) accuracy is reported as a **fraction in [0, 1]**.
+
 ```python
 def compute_metrics(preds, labels):
     preds = preds.argmax(dim=-1)
     accuracy = (preds == labels).float().mean()
-    return {"accuracy": accuracy * 100}
+    return {"accuracy": accuracy.item()}  # fraction in [0, 1]
 
 trainer = Trainer(
     model=model,
+    config=config,
+    train_dataloader=train_loader,   # required
+    eval_dataloader=eval_loader,     # compute_metrics runs during evaluation
     compute_metrics=compute_metrics,
 )
 ```
@@ -726,17 +731,6 @@ scheduler = get_transformer_scheduler(
     num_warmup_steps=100,
     num_training_steps=10000,
 )
-
-### GradientCheckpointingManager
-
-```python
-from selgis.checkpointing import GradientCheckpointingManager
-
-manager = GradientCheckpointingManager(
-    checkpoint_interval=1,  # 1 = every layer, 2 = every 2nd layer
-    use_reentrant=False,
-)
-model = manager.apply_to_model(model)
 ```
 
 ---
@@ -781,7 +775,19 @@ trainer.train()
 ### Example 2: LLM with LoRA
 
 ```python
-from selgis import TransformerTrainer, TransformerConfig
+from transformers import AutoTokenizer
+from selgis import TransformerTrainer, TransformerConfig, DatasetConfig, create_dataloaders
+
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B")
+
+d_config = DatasetConfig(
+    data_type="text",
+    data_path="./data.jsonl",
+    tokenizer=tokenizer,   # required: without it the dataset returns raw text
+    batch_size=4,
+    max_length=512,
+)
+train_loader, eval_loader = create_dataloaders(d_config)
 
 config = TransformerConfig(
     model_name_or_path="Qwen/Qwen2-0.5B",
@@ -796,7 +802,13 @@ config = TransformerConfig(
     max_epochs=3,
 )
 
-trainer = TransformerTrainer("Qwen/Qwen2-0.5B", config=config)
+trainer = TransformerTrainer(
+    "Qwen/Qwen2-0.5B",
+    config,
+    train_dataloader=train_loader,
+    eval_dataloader=eval_loader,
+    tokenizer=tokenizer,
+)
 trainer.train()
 trainer.save_pretrained("./model")
 ```
@@ -809,11 +821,14 @@ from selgis import Trainer, SelgisConfig
 def compute_metrics(preds, labels):
     preds = preds.argmax(dim=-1)
     return {
-        "accuracy": (preds == labels).float().mean().item() * 100,
+        "accuracy": (preds == labels).float().mean().item(),  # fraction in [0, 1]
     }
 
 trainer = Trainer(
     model=model,
+    config=config,
+    train_dataloader=train_loader,
+    eval_dataloader=eval_loader,
     compute_metrics=compute_metrics,
 )
 ```
