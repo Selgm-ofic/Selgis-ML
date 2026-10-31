@@ -114,6 +114,10 @@ config = SelgisConfig(
 2. Loss spikes — rollback, LR halved
 3. Optimizer momentum is zeroed (not restored)
 4. The offending batch is skipped, training continues
+5. Too many *consecutive* rollbacks (default 10, one healthy batch resets the
+   counter) — training stops with a clear `RuntimeError` ("data is likely
+   corrupted") and the best saved weights are restored. Configure with
+   `max_consecutive_rollbacks` (`0` disables the guard).
 
 Note: state snapshots are taken every `state_update_interval=100` optimizer
 steps, so a rollback can lose up to 100 steps of progress.
@@ -358,9 +362,10 @@ A rollback:
 Honest limitations: RNG state and data-loader position are not rolled back;
 the loss history window is a fixed-size moving average — a threshold based on
 the last 10 losses can trigger false positives if the loss is dropping very fast.
-There is currently **no limit on consecutive rollbacks**: if every batch
-keeps failing (e.g., corrupted data), Selgis keeps rolling back and halving
-the LR (floored at `min_lr`) instead of stopping — watch your logs.
+Consecutive rollbacks are capped by `max_consecutive_rollbacks` (default 10):
+if every batch keeps failing (e.g., corrupted data), training stops with a
+clear error and the best saved weights are restored, instead of halving the
+LR (`floored at min_lr`) forever. `0` disables the cap — watch your logs.
 OOM is not auto-recovered; use the memory techniques above.
 
 ### LR Finder — Smith's LR Range Test
@@ -449,6 +454,7 @@ selgis test
 | `batch_size` | 32 | Batch size |
 | `nan_recovery` | True | Auto-rollback |
 | `spike_threshold` | 3.0 | Spike detection |
+| `max_consecutive_rollbacks` | 10 | Stop after this many consecutive rollbacks (`0` disables) |
 | `grad_clip_norm` | 1.0 | Gradient clip |
 | `save_best_only` | True | Save best only |
 | `cpu_offload` | False | CPU optimizer |
@@ -506,7 +512,6 @@ selgis[all]           # everything above
 - **Single-GPU only** — DDP / multi-GPU / FSDP are not supported yet (see plans below)
 - **DeepSpeed** — partial support today; full ZeRO/pipeline integration is planned for v0.3.0
 - **OOM** is not auto-recovered — see the memory techniques above
-- Repeated rollbacks are not capped (see [How It Works](#how-it-works))
 
 ## When NOT to use Selgis
 
@@ -532,7 +537,7 @@ a perfectly good choice.
   - Llama, Qwen, Mistral, Phi, Gemma, Gemma 4 support
   - Model loading from a local path or the HuggingFace Hub
 
-- [ ] **Rollback loop guard** — cap consecutive rollbacks (`max_consecutive_rollbacks`) and stop with a clear error instead of halving LR forever
+- [x] **Rollback loop guard** — DONE: `max_consecutive_rollbacks` caps consecutive rollbacks and stops with a clear error ("data is likely corrupted") instead of halving LR forever; best saved weights are restored
 
 - [ ] **DeepSpeed full** — complete ZeRO, pipeline
 

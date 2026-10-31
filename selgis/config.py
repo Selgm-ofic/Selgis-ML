@@ -36,6 +36,7 @@ class SelgisConfig:
     spike_threshold: float = 3.0
     min_history_len: int = 10
     nan_recovery: bool = True
+    max_consecutive_rollbacks: int = 10
 
     # === LR Finder ===
     lr_finder_enabled: bool = False
@@ -127,6 +128,11 @@ class SelgisConfig:
             raise ValueError(f"spike_threshold must be positive, got {self.spike_threshold}")
         if self.min_history_len <= 0:
             raise ValueError(f"min_history_len must be positive, got {self.min_history_len}")
+        if self.max_consecutive_rollbacks < 0:
+            raise ValueError(
+                f"max_consecutive_rollbacks must be non-negative (0 disables the guard), "
+                f"got {self.max_consecutive_rollbacks}"
+            )
         if self.state_update_interval <= 0:
             raise ValueError(
                 f"state_update_interval must be positive, got {self.state_update_interval}"

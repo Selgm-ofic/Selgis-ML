@@ -71,6 +71,12 @@ class SelgisCore:
             100,
         )
         self._steps_since_last_state: int = 0
+        self._max_consecutive_rollbacks: int = getattr(
+            config,
+            "max_consecutive_rollbacks",
+            10,
+        )
+        self._consecutive_rollbacks: int = 0
 
         self._trainable_param_names: set[str] = self._get_trainable_param_names()
 
@@ -289,9 +295,36 @@ class SelgisCore:
         return True
 
     def _rollback(self, reason: str) -> None:
-        """Rollback to last stable state, reset optimizer buffers for affected params, and reduce LR."""
+        """Rollback to last stable state, reset optimizer buffers for affected params, and reduce LR.
+
+        Raises:
+            RuntimeError: If ``max_consecutive_rollbacks`` is exceeded (a
+                run of failing batches with no healthy batch in between),
+                after restoring the best saved weights. ``0`` disables the guard.
+        """
         logger.warning("Rollback triggered: %s", reason)
         self._load_last_good_state()
+
+        self._consecutive_rollbacks += 1
+        max_rb = self._max_consecutive_rollbacks
+        if 0 < max_rb <= self._consecutive_rollbacks:
+            # Every batch keeps failing even after repeated rollbacks and LR
+            # reductions — the data (or the model) is beyond self-healing.
+            # Leave the model in the best weights we know instead of the
+            # last-good snapshot that just failed.
+            restored = self._load_best_state()
+            logger.error(
+                "Consecutive rollback limit reached (%d/%d): training stopped%s.",
+                self._consecutive_rollbacks,
+                max_rb,
+                ", best saved weights restored" if restored else "",
+            )
+            raise RuntimeError(
+                f"Training stopped: {self._consecutive_rollbacks} consecutive rollbacks "
+                f"(max_consecutive_rollbacks={max_rb}). Every batch keeps failing "
+                f"(NaN/Inf loss or spikes), so the data is likely corrupted."
+                + (" Best saved weights have been restored." if restored else "")
+            )
 
 
         for group in self.optimizer.param_groups:
@@ -339,6 +372,8 @@ class SelgisCore:
                 return False
 
         self._loss_history.append(loss_val)
+        # Any healthy batch resets the consecutive-rollback counter.
+        self._consecutive_rollbacks = 0
         return True
 
     def backward_step(

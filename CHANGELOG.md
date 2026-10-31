@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`max_consecutive_rollbacks`** config option (default 10, `0` disables the guard): when every batch keeps failing — NaN/Inf loss or a spike — with no healthy batch in between, training now stops with a clear `RuntimeError` ("...the data is likely corrupted") instead of rolling back and halving the LR forever. The best saved weights are restored before the error is raised; any healthy batch resets the counter. Regression tests: `tests/test_rollback_guard.py` (limit exhausted → error + best weights restored; NaN interleaved with healthy batches → never triggers; `0` → old behavior unchanged).
+
 ## [0.2.7.2] - 2026-10-30
 
 ### Fixed
