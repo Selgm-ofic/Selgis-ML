@@ -25,6 +25,7 @@ from typing import Any
 import torch
 
 from selgis.datasets.base import StreamingDataset
+from selgis.datasets.text import _mask_pad_labels
 
 
 class StreamingTextDataset(StreamingDataset):
@@ -196,10 +197,11 @@ class StreamingTextDataset(StreamingDataset):
             return_tensors="pt",
         )
 
+        input_ids = encoded["input_ids"].squeeze(0)
         return {
-            "input_ids": encoded["input_ids"].squeeze(0),
+            "input_ids": input_ids,
             "attention_mask": encoded["attention_mask"].squeeze(0),
-            "labels": encoded["input_ids"].squeeze(0).clone(),
+            "labels": _mask_pad_labels(input_ids, encoded["attention_mask"].squeeze(0)),
         }
 
     def _close_file(self) -> None:

@@ -14,6 +14,19 @@ import torch
 from torch.utils.data import Dataset
 
 
+def _mask_pad_labels(input_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
+    """Return LM labels with padding positions replaced by ignore_index (-100).
+
+    Training on ``labels = input_ids`` that still contain pad-token ids makes
+    the loss compute over padding and dilutes it; both the chunked CE and
+    HF-style losses honor ``ignore_index=-100``.
+    """
+    labels = input_ids.clone()
+    if attention_mask is not None:
+        labels[attention_mask == 0] = -100
+    return labels
+
+
 class TextDataset(Dataset):
     """Text dataset for language model training.
 
@@ -211,10 +224,12 @@ class TextDataset(Dataset):
         start_time = time.perf_counter()
 
         if self._tokenized_cache:
+            input_ids = self._tokenized_cache["input_ids"][idx]
+            attention_mask = self._tokenized_cache["attention_mask"][idx]
             return {
-                "input_ids": self._tokenized_cache["input_ids"][idx],
-                "attention_mask": self._tokenized_cache["attention_mask"][idx],
-                "labels": self._tokenized_cache["input_ids"][idx],
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "labels": _mask_pad_labels(input_ids, attention_mask),
             }
 
         if self._records and self.file_format != "jsonl":
@@ -249,7 +264,10 @@ class TextDataset(Dataset):
             return {
                 "input_ids": encoded["input_ids"].squeeze(0),
                 "attention_mask": encoded["attention_mask"].squeeze(0),
-                "labels": encoded["input_ids"].squeeze(0),
+                "labels": _mask_pad_labels(
+                    encoded["input_ids"].squeeze(0),
+                    encoded["attention_mask"].squeeze(0),
+                ),
             }
 
         elapsed = (time.perf_counter() - start_time) * 1000
@@ -435,7 +453,7 @@ class HFTextDataset(Dataset):
             return {
                 "input_ids": input_ids,
                 "attention_mask": encoded["attention_mask"].squeeze(0),
-                "labels": input_ids.clone(),
+                "labels": _mask_pad_labels(input_ids, encoded["attention_mask"].squeeze(0)),
             }
 
         return {"text": text}
