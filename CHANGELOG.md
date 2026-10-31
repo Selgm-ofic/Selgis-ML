@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`max_consecutive_rollbacks`** config option (default 10, `0` disables the guard): when every batch keeps failing — NaN/Inf loss or a spike — with no healthy batch in between, training now stops with a clear `RuntimeError` ("...the data is likely corrupted") instead of rolling back and halving the LR forever. The best saved weights are restored before the error is raised; any healthy batch resets the counter. Regression tests: `tests/test_rollback_guard.py` (limit exhausted → error + best weights restored; NaN interleaved with healthy batches → never triggers; `0` → old behavior unchanged).
 
+### Fixed
+
+- **`TransformerTrainer` (chunked CE, causal_lm/seq2seq)**: the chunked train loss was computed **without the causal label shift** — `logits[t]` was matched with `labels[t]` (the current token) instead of `labels[t+1]`. Because HF models compute their own eval loss *with* the shift, training became a degenerate "copy the current token" task: on a real Qwen2-0.5B LoRA run train_loss fell to 1.58 while eval loss stayed at 9.87 (≈ random). The shift (`logits[:, :-1]` vs `labels[:, 1:]`) is now applied before the chunked criterion for `causal_lm`/`seq2seq`; `masked_lm` stays position-aligned. Found during real-hardware validation; regression test in `tests/test_chunked_ce_shift.py`.
+- **`TransformerTrainer`** with `use_unsloth=True` and a model name/path: when unsloth is not installed (or the Unsloth load fails), the trainer crashed later with an obscure `AttributeError: 'NoneType' object has no attribute ...` because the deferred model load left `model=None`. It now falls back to the standard loading path with a clear warning. Found during real-hardware validation; regression test in `tests/test_unsloth_fallback.py`.
+
 ## [0.2.7.2] - 2026-10-30
 
 ### Fixed

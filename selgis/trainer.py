@@ -722,6 +722,17 @@ class TransformerTrainer(Trainer):
 
         if use_unsloth:
             model = self._apply_unsloth(model, config, model_or_path)
+            if model is None:
+                # use_unsloth=True deferred loading to _apply_unsloth, but
+                # Unsloth is unavailable or failed: fall back to the
+                # standard loading path instead of passing model=None
+                # downstream (which would crash with an obscure
+                # AttributeError on the first model access).
+                logger.warning(
+                    "Unsloth unavailable or failed; loading %s with the standard path",
+                    model_or_path,
+                )
+                model = self._load_model(model_or_path, config)
             # Check if Unsloth already applied PEFT (it does if peft_config provided)
             unsloth_applied_peft = (
                 use_unsloth
@@ -932,6 +943,17 @@ class TransformerTrainer(Trainer):
         # device_map the batch dict is not fully moved upfront).
         if labels.device != logits.device:
             labels = labels.to(logits.device)
+
+        # HF semantics: for causal LM / seq2seq, logits at position t must
+        # predict token t+1 — when the model computes its own loss it shifts
+        # labels internally. Here labels were stripped from the model call,
+        # so the shift has to be applied before the criterion (found during
+        # real-hardware validation: without it the model is trained to copy
+        # the current token instead of predicting the next one). Masked LM
+        # is position-aligned and must NOT be shifted.
+        if self._transformer_config.problem_type in ("causal_lm", "seq2seq"):
+            logits = logits[:, :-1, :]
+            labels = labels[:, 1:]
 
         loss = self.criterion(logits, labels)
 
