@@ -147,6 +147,7 @@ config = SelgisConfig(
     spike_threshold=3.0,
     min_history_len=10,
     nan_recovery=True,
+    max_consecutive_rollbacks=10,
 
     # LR Finder
     lr_finder_enabled=False,
@@ -201,6 +202,7 @@ config = SelgisConfig(
 | `learning_rate` | float | 1e-3 | Initial learning rate |
 | `nan_recovery` | bool | True | Auto-rollback on NaN/Inf |
 | `spike_threshold` | float | 3.0 | Spike detection multiplier |
+| `max_consecutive_rollbacks` | int | 10 | Stop with RuntimeError after this many consecutive rollbacks (healthy batch resets the counter; `0` disables the guard) |
 | `grad_clip_norm` | float | 1.0 | Gradient norm clip |
 | `cpu_offload` | bool | False | Offload optimizer to CPU |
 | `fp16` | bool | False | FP16 mixed precision |
