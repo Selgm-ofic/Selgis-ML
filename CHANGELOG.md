@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent skill** (`skills/selgis/SKILL.md`) — a source-verified cheat sheet for AI coding agents: API reference, the five common pitfalls with file:line references, working training / self-healing patterns, and an error → cause → fix table. Agents discover it via `AGENTS.md` at the repo root and the "For AI agents" section in the README, and are advised to read the skill from the release tag matching their installed `selgis.__version__`.
 - **`max_consecutive_rollbacks`** config option (default 10, `0` disables the guard): when every batch keeps failing — NaN/Inf loss or a spike — with no healthy batch in between, training now stops with a clear `RuntimeError` ("...the data is likely corrupted") instead of rolling back and halving the LR forever. The best saved weights are restored before the error is raised; any healthy batch resets the counter. Regression tests: `tests/test_rollback_guard.py` (limit exhausted → error + best weights restored; NaN interleaved with healthy batches → never triggers; `0` → old behavior unchanged).
 
 ### Fixed

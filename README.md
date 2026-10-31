@@ -28,6 +28,12 @@ Selgis automatically:
 
 ---
 
+## For AI agents
+
+This repo ships a maintained **agent skill**: [`skills/selgis/SKILL.md`](skills/selgis/SKILL.md) — a source-verified API cheat sheet, the five common pitfalls (with file:line references), working code patterns and an error → fix table. If you are an AI agent about to write selgis code, read it first (see [`AGENTS.md`](AGENTS.md)); it is verified against each release tag.
+
+---
+
 ## Installation
 
 ```bash
@@ -558,6 +564,7 @@ a perfectly good choice.
 - [API Docs](https://github.com/Selgm-ofic/Selgis-ML/blob/main/API.md)
 - [Tests](https://github.com/Selgm-ofic/Selgis-ML/tree/main/tests) — including regression tests for every bug fixed in 0.2.7.2 (green CI badge = all passing)
 - [Examples](https://github.com/Selgm-ofic/Selgis-ML/blob/main/example_selgis.py)
+- [Agent skill](skills/selgis/SKILL.md) — for AI coding agents
 
 ---
 
