@@ -66,6 +66,8 @@ trainer.train()
 
 `batch_size` belongs in `DatasetConfig`, not `TransformerConfig`
 (selgis/config.py:151). `TransformerConfig` overrides `learning_rate=2e-5`.
+Text datasets return LM `labels` with padding masked to `-100`
+(selgis ≥ 0.2.7.3), so the loss covers real tokens only.
 
 ## Five traps (verified against source)
 
@@ -86,7 +88,11 @@ trainer.train()
    epoch-based. Setting both raises `ValueError`.
 5. **`chunked_ce=True` only applies to `problem_type` in
    {`causal_lm`, `seq2seq`, `masked_lm`}** (selgis/trainer.py:766); for
-   classification it is silently ignored (tiny vocab, no benefit).
+   classification it is silently ignored (tiny vocab, no benefit). Requires
+   selgis ≥ 0.2.7.3: earlier releases computed the chunked train loss
+   without the causal label shift, so the model learned to copy the current
+   token instead of predicting the next one (HF-computed eval loss stayed
+   near-random while train_loss dropped).
 
 ## Pattern 1 — basic training
 
