@@ -545,6 +545,8 @@ a perfectly good choice.
 
 - [x] **Rollback loop guard** — DONE: `max_consecutive_rollbacks` caps consecutive rollbacks and stops with a clear error ("data is likely corrupted") instead of halving LR forever; best saved weights are restored
 
+- [ ] **MCP server** — Model Context Protocol integration for AI agents: config validation, error → cause → fix lookup, and the agent skill (`skills/selgis/SKILL.md`) exposed as a resource
+
 - [ ] **DeepSpeed full** — complete ZeRO, pipeline
 
 - [ ] **FSDP** — Fully Sharded Data Parallel
